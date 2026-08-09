@@ -155,6 +155,15 @@ class FulDCClient:
             if not td.endswith("\\"):
                 td += "\\"
             body["target_directory"] = td
+        if name:
+            # The `name` argument was accepted and then never sent. Without target_name the API
+            # falls back to the result's own last path segment (SearchResult.cpp -> for a
+            # directory, getAdcLastDir), so a release at ".../Movie.2021-GRP/1080p/" landed in a
+            # folder called "1080p" while the bridge reported content_path built from the
+            # release folder — a path that does not exist, so the import failed and every
+            # quality-subfoldered release collided in one directory. It also broke the
+            # name-based bundle fallback below, where b["name"] == name could never be true.
+            body["target_name"] = name
         st, data = self._call("POST", f"/search/{instance_id}/results/{result_id}/download", body)
         if st != 200:
             raise FulDCError(f"download http {st}: {data}")

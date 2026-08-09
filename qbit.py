@@ -148,6 +148,20 @@ def add(client: FulDCClient, urls: list[str], category: str) -> None:
                        "failed": True})
             continue
         bundle_id, target = res
+        if bundle_id is None:
+            # `if not res` above cannot catch this: _reacquire returns the tuple
+            # (None, target), and a 2-tuple is always truthy. Tracked without "failed" the
+            # entry became a permanent phantom — _bundle_for() returns None for a null id and
+            # _state(None) answers ("downloading", 0.0) on every poll, so the Radarr queue item
+            # never completed, never errored, was never blocklisted, and no alternative was
+            # sought. Report it as failed like the other unresolved paths above.
+            print(f"[qbit] add: {info['release']!r} queued but no bundle id resolved — "
+                  f"reporting as failed", flush=True)
+            _track(h, {"name": info["release"], "category": category or "",
+                       "size": info["size"], "save_path": target or "",
+                       "added_on": int(time.time()), "bundle_id": None,
+                       "failed": True})
+            continue
         _track(h, {"name": info["release"], "category": category or "",
                    "size": info["size"], "save_path": target,
                    "added_on": int(time.time()), "bundle_id": bundle_id})
