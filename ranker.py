@@ -47,7 +47,7 @@ def fold(s: str) -> str:
 
 
 def normalize(s: str) -> str:
-    return _norm.sub(" ", fold(s)).strip().lower()
+    return _norm.sub(" ", fold(s).replace("&", " and ")).strip().lower()
 
 
 def _token_in(token: str, haystack: str) -> bool:
@@ -75,7 +75,8 @@ def scene_title(title: str) -> str:
     'Lord.of.the.Rings.The.Rings.of.Power'). The hub search ANDs every term, so
     a token like 'Rings:' (colon attached) matches nothing in a dotted filename.
     Dropping punctuation and using dots is what real releases look like."""
-    t = _SCENE_DROP.sub("", title)          # drop : ' , ! ? ( ) & etc.
+    t = title.replace("&", " and ")         # scene convention: '&' -> 'and', not dropped
+    t = _SCENE_DROP.sub("", t)               # drop : ' , ! ? ( ) etc.
     t = re.sub(r"\s+", ".", t.strip())       # spaces -> dots
     t = re.sub(r"\.{2,}", ".", t)            # collapse repeated dots
     return t.strip("._-")

@@ -242,6 +242,15 @@ class TestSceneTitle(unittest.TestCase):
         self.assertEqual(ranker.scene_title("Spider-Man: Brand New Day"),
                          "Spider-Man.Brand.New.Day")
 
+    def test_ampersand_becomes_and(self):
+        # scene releases spell '&' as 'and' (Minions & Monsters -> Minions.and.Monsters)
+        self.assertEqual(ranker.scene_title("Minions & Monsters"),
+                         "Minions.and.Monsters")
+        self.assertEqual(ranker.scene_title("Tom & Jerry"), "Tom.and.Jerry")
+        # and the ranker scores the 'and' release as a full title match
+        self.assertEqual(ranker.normalize("Minions & Monsters"),
+                         ranker.normalize("Minions.and.Monsters"))
+
     def test_monitor_matcher_has_no_punctuation(self):
         c = FakeClient()
         core.monitor_tv_season(c, "Lord of the Rings: The Rings of Power", 3,
