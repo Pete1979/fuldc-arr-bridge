@@ -260,6 +260,15 @@ class TestSceneTitle(unittest.TestCase):
         self.assertEqual(ranker.search_queries("Lotta på Bråkmakargatan", 1992),
                          ["Lotta.pa.Brakmakargatan 1992", "Lotta.pa.Brakmakargatan"])
 
+    def test_separator_hyphen_dropped_intraword_kept(self):
+        # ' - ' is a scene title separator (collapses to a dot); an intra-word
+        # hyphen (Spider-Man) stays. DC has Lotta.2.Lotta.Flyttar.Hemifran, not
+        # Lotta.2.-.Lotta... — a bare '-' token would AND-match nothing.
+        self.assertEqual(ranker.scene_search("Lotta 2 - Lotta flyttar hemifrån"),
+                         "Lotta.2.Lotta.flyttar.hemifran")
+        self.assertEqual(ranker.scene_title("Spider-Man: Brand New Day"),
+                         "Spider-Man.Brand.New.Day")
+
     def test_monitor_matcher_has_no_punctuation(self):
         c = FakeClient()
         core.monitor_tv_season(c, "Lord of the Rings: The Rings of Power", 3,

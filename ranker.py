@@ -77,6 +77,7 @@ def scene_title(title: str) -> str:
     Dropping punctuation and using dots is what real releases look like."""
     t = title.replace("&", " and ")         # scene convention: '&' -> 'and', not dropped
     t = _SCENE_DROP.sub("", t)               # drop : ' , ! ? ( ) etc.
+    t = re.sub(r"\s+-+\s+", " ", t)          # ' - ' title separator -> dot (keep Spider-Man)
     t = re.sub(r"\s+", ".", t.strip())       # spaces -> dots
     t = re.sub(r"\.{2,}", ".", t)            # collapse repeated dots
     return t.strip("._-")
