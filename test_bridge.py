@@ -25,6 +25,7 @@ os.environ.setdefault("FULDC_PASS", "test")
 import core
 import fuldc_client
 import httputil
+import metadata
 import qbit
 import ranker
 import store
@@ -251,6 +252,14 @@ class TestSceneTitle(unittest.TestCase):
         self.assertEqual(ranker.normalize("Minions & Monsters"),
                          ranker.normalize("Minions.and.Monsters"))
 
+    def test_scene_search_folds_diacritics(self):
+        # DC transliterates accents; the search string must too or the hub's
+        # AND-match returns nothing (Lotta på Bråkmakargatan -> ...Pa.Brakmakargatan)
+        self.assertEqual(ranker.scene_search("Lotta på Bråkmakargatan"),
+                         "Lotta.pa.Brakmakargatan")
+        self.assertEqual(ranker.search_queries("Lotta på Bråkmakargatan", 1992),
+                         ["Lotta.pa.Brakmakargatan 1992", "Lotta.pa.Brakmakargatan"])
+
     def test_monitor_matcher_has_no_punctuation(self):
         c = FakeClient()
         core.monitor_tv_season(c, "Lord of the Rings: The Rings of Power", 3,
@@ -258,6 +267,26 @@ class TestSceneTitle(unittest.TestCase):
         ss = c.body_for("POST", "/auto_search/items")["search_string"]
         self.assertNotIn(":", ss)
         self.assertIn("Rings.of.Power", ss)
+
+
+class TestOriginalTitle(unittest.TestCase):
+    """Seerr sends the translated display title, but DC scene releases of a
+    foreign film use its original-language title (Lotta on Rascal Street ->
+    Lotta på Bråkmakargatan)."""
+
+    def test_foreign_movie_returns_original(self):
+        d = {"original_language": "sv",
+             "original_title": "Lotta på Bråkmakargatan",
+             "title": "Lotta on Rascal Street"}
+        self.assertEqual(metadata._original_title(d), "Lotta på Bråkmakargatan")
+
+    def test_english_returns_none(self):
+        self.assertIsNone(metadata._original_title(
+            {"original_language": "en", "original_title": "Whatever"}))
+
+    def test_seerr_camelcase_tv(self):
+        d = {"originalLanguage": "sv", "originalName": "Svenska Serien"}
+        self.assertEqual(metadata._original_title(d), "Svenska Serien")
 
 
 class TestYearFolder(unittest.TestCase):

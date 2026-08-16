@@ -22,9 +22,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from fuldc_client import FulDCClient
 from httputil import body_too_large, read_body, secure_equal
-from ranker import Prefs
+from ranker import Prefs, fold
 from core import grab_tv_season, hybrid_grab
-from metadata import classify
+from metadata import request_meta
 
 APPROVED = {"MEDIA_APPROVED", "MEDIA_AUTO_APPROVED"}
 YEAR_RE = re.compile(r"\((\d{4})\)")
@@ -173,9 +173,15 @@ def _handle(payload: dict) -> None:
     if not title:
         print("[skip] empty title", flush=True)
         return
-    kids, ended = classify(tmdb, mtype, log=lambda m: print(m, flush=True))
+    kids, ended, alt = request_meta(tmdb, mtype, log=lambda m: print(m, flush=True))
     if os.environ.get("KIDS_ROUTING", "1") != "1":
         kids = False
+    # DC releases of a foreign film use its original title, but only when that
+    # is Latin-script (Nordic/European). A non-Latin original (CJK, Cyrillic)
+    # can't match ASCII scene names, so keep Seerr's romanized display title.
+    if alt and alt != title and all(ord(c) < 128 for c in fold(alt) if c.isalpha()):
+        print(f"[orig] searching original title {alt!r} (Seerr display: {title!r})", flush=True)
+        title = alt
     mov_dir, ser_dir = _request_dirs(kids)
     if kids:
         print(f"[kids] routing {title!r} -> kids folders", flush=True)

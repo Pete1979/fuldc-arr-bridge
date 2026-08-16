@@ -71,6 +71,29 @@ def _kids_genre_set() -> set[str]:
     return {g.strip().lower() for g in raw.split(",") if g.strip()}
 
 
+def _flags(d: dict, media_type: str) -> tuple[bool, bool]:
+    genres = [g.get("name", "") for g in d.get("genres", [])]
+    kids = any(name.lower() in _kids_genre_set() for name in genres)
+    ended = (media_type == "tv"
+             and (d.get("status") or "").strip().lower() in ENDED_STATUSES)
+    return kids, ended
+
+
+def _original_title(d: dict) -> str | None:
+    """The title in its original language, when that language isn't English.
+
+    DC/scene releases of a foreign film use its original title (Nordic content
+    on Swedish hubs especially), not Seerr's translated display title. Handles
+    TMDB (snake_case) and Seerr (camelCase); movie=title, tv=name.
+    """
+    lang = (d.get("original_language") or d.get("originalLanguage") or "").lower()
+    if lang == "en":
+        return None
+    orig = (d.get("original_title") or d.get("originalTitle")
+            or d.get("original_name") or d.get("originalName") or "").strip()
+    return orig or None
+
+
 def classify(tmdb_id: int | None, media_type: str, *, log=print) -> tuple[bool, bool]:
     """Return (is_kids, is_ended) from a single metadata lookup.
 
@@ -82,11 +105,21 @@ def classify(tmdb_id: int | None, media_type: str, *, log=print) -> tuple[bool, 
     d = _details(tmdb_id, media_type, log=log)
     if not d:
         return False, False
-    genres = [g.get("name", "") for g in d.get("genres", [])]
-    kids = any(name.lower() in _kids_genre_set() for name in genres)
-    ended = (media_type == "tv"
-             and (d.get("status") or "").strip().lower() in ENDED_STATUSES)
-    return kids, ended
+    return _flags(d, media_type)
+
+
+def request_meta(tmdb_id: int | None, media_type: str,
+                 *, log=print) -> tuple[bool, bool, str | None]:
+    """(is_kids, is_ended, original_title) from a single metadata lookup.
+
+    original_title is the non-English original-language title (what DC scene
+    releases of foreign films are named), or None when English/unavailable.
+    """
+    d = _details(tmdb_id, media_type, log=log)
+    if not d:
+        return False, False, None
+    kids, ended = _flags(d, media_type)
+    return kids, ended, _original_title(d)
 
 
 def is_kids(tmdb_id: int | None, media_type: str, *, log=print) -> bool:

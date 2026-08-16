@@ -82,13 +82,20 @@ def scene_title(title: str) -> str:
     return t.strip("._-")
 
 
+def scene_search(title: str) -> str:
+    """scene_title, additionally ASCII-folded. DC scene releases transliterate
+    diacritics (Bråkmakargatan -> Brakmakargatan, på -> pa) and the hub ANDs
+    every term, so a query that keeps the accents matches nothing."""
+    return fold(scene_title(title))
+
+
 def search_queries(title: str, year: int | None) -> list[str]:
     """Ordered hub-search patterns to try. Leading articles are dropped because
     DC hub search ANDs every term and a stopword like 'The' can zero out an
     otherwise-valid query (verified: 'The Matrix 1999' -> 0, 'Matrix 1999' -> ok).
     Titles are scene-formatted (dotted, no punctuation) to match DC filenames.
     """
-    base = scene_title(strip_leading_article(title))
+    base = scene_search(strip_leading_article(title))
     out = [f"{base} {year}", base] if year else [base]
     seen: set[str] = set()
     ordered: list[str] = []
