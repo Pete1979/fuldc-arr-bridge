@@ -196,6 +196,7 @@ def hybrid_grab(client: FulDCClient, title: str, year: int | None, *,
                                     expire_days=AUTOSEARCH_TTL_DAYS,
                                     matcher_type=matcher_type,
                                     matcher_string=matcher_string,
+                                    file_type="directory",
                                     min_size=_autosearch_min_size(prefs, kind, season))
     return {"mode": "autosearch", "matcher": matcher,
             "autosearch_id": item.get("id"), "target": target, "season": season}
@@ -252,10 +253,14 @@ def monitor_tv_season(client: FulDCClient, show: str, season: int, *,
     base = scene_search(strip_leading_article(show))
     q = f" {quality}" if quality else ""
     matcher = f"{base} S{season:02d}E%[inc]{q}"
+    # Match release DIRECTORIES only: a RAR set also surfaces its loose .rNN
+    # parts as individual file results, and file_type=any would grab a single
+    # 150 MB part instead of the folder.
     item = client.create_autosearch(matcher, target_directory=target,
                                     excluded=BAD_SOURCE, remove_after_hit=False,
                                     use_params=True, cur_number=first_episode,
                                     max_number=0, number_length=2,
+                                    file_type="directory",
                                     min_size=(prefs or Prefs()).min_size_episode)
     log(f"# monitor {matcher!r} (from E{first_episode:02d}) -> {target}")
     return {"mode": "monitor", "matcher": matcher,

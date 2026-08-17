@@ -277,6 +277,14 @@ class TestSceneTitle(unittest.TestCase):
         self.assertNotIn(":", ss)
         self.assertIn("Rings.of.Power", ss)
 
+    def test_monitor_matches_directories_only(self):
+        # a RAR set also surfaces loose .rNN file results; file_type=any grabs a
+        # single part instead of the release folder
+        c = FakeClient()
+        core.monitor_tv_season(c, "Lanterns", 1, log=lambda m: None)
+        body = c.body_for("POST", "/auto_search/items")
+        self.assertEqual(body.get("file_type"), "directory")
+
 
 class TestOriginalTitle(unittest.TestCase):
     """Seerr sends the translated display title, but DC scene releases of a
