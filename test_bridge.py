@@ -306,6 +306,40 @@ class TestOriginalTitle(unittest.TestCase):
         self.assertEqual(metadata._original_title(d), "Svenska Serien")
 
 
+class TestSeasonPackPlacement(unittest.TestCase):
+    """A season pack is a directory of episode folders; it must land AS the
+    S<NN> folder, not nested series\\Show\\S<NN>\\<pack>\\<episodes>."""
+
+    def _show(self):
+        return core.resolve_target("series", "Norsemen", None, r"S:\dc",
+                                   None, None, None, None, 2016)
+
+    def _season(self):
+        return core.resolve_target("series", "Norsemen", None, r"S:\dc",
+                                   None, 2, None, None, 2016)
+
+    def test_pack_contents_go_into_season_folder(self):
+        tgt, name = core._download_placement(
+            "series", "Norsemen", None, r"S:\dc", 2, None, None, 2016,
+            "Norsemen.S02.iNTERNAL.1080p.WEB.X264-EDHD", self._season())
+        self.assertEqual(tgt, self._show())
+        self.assertEqual(name, "S02")
+
+    def test_single_episode_keeps_release_folder(self):
+        season = self._season()
+        tgt, name = core._download_placement(
+            "series", "Norsemen", None, r"S:\dc", 2, None, None, 2016,
+            "Norsemen.S02E03.iNTERNAL.1080p.WEB.X264-EDHD", season)
+        self.assertEqual(tgt, season)
+        self.assertEqual(name, "Norsemen.S02E03.iNTERNAL.1080p.WEB.X264-EDHD")
+
+    def test_movie_unchanged(self):
+        tgt, name = core._download_placement(
+            "movie", "Dune", None, r"S:\dc", None, None, None, 2021,
+            "Dune.2021.1080p.WEB", r"S:\dc\movies" + "\\")
+        self.assertEqual((tgt, name), (r"S:\dc\movies" + "\\", "Dune.2021.1080p.WEB"))
+
+
 class TestYearFolder(unittest.TestCase):
     def test_series_folder_gets_year(self):
         got = core.resolve_target("series", "Shameless", None, r"S:\dc", None, 3,

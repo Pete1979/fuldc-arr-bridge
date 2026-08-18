@@ -13,7 +13,8 @@ import re
 from contextlib import contextmanager
 
 from fuldc_client import PRIO_HIGH, FulDCClient
-from ranker import Prefs, rank, search_queries, strip_leading_article, scene_title, scene_search
+from ranker import (Prefs, rank, search_queries, strip_leading_article,
+                    scene_title, scene_search, SEASON_EP_RE)
 
 # Excluded words for server-side AutoSearch.
 #
@@ -84,6 +85,24 @@ def resolve_target(kind: str, title: str, series: str | None,
         return p + f"S{season:02d}\\" if season else p
     md = (movies_dir or f"{root}\\movies").rstrip("\\/")
     return f"{md}\\"
+
+
+def _download_placement(kind: str, title: str, series: str | None, dc_root: str,
+                        season: int | None, movies_dir: str | None,
+                        series_dir: str | None, year: int | None,
+                        release: str, season_target: str) -> tuple[str, str]:
+    """Where an immediately-grabbed result is written (target_directory, name).
+
+    A season PACK is a directory that already holds the episodes, so put its
+    CONTENTS straight into the S<NN> folder (name the download S<NN>) instead of
+    nesting series\\Show\\S<NN>\\<pack>\\<episodes>. A single episode or a movie
+    keeps its own release folder under the normal target.
+    """
+    if kind == "series" and season and not SEASON_EP_RE.search(release):
+        show = resolve_target("series", title, series, dc_root, None, None,
+                              movies_dir, series_dir, year)
+        return show, f"S{season:02d}"
+    return season_target, release
 
 
 def _queries(title: str, year: int | None, kind: str, season: int | None) -> list[str]:
@@ -167,11 +186,14 @@ def hybrid_grab(client: FulDCClient, title: str, year: int | None, *,
             cands = rank(results, title, year, prefs, kind=kind)
             if cands:
                 best = cands[0]
-                info = client.download_result(iid, best.result["id"], target,
-                                              name=best.release)
+                dl_target, dl_name = _download_placement(
+                    kind, title, series, dc_root, season, movies_dir,
+                    series_dir, year, best.release, target)
+                info = client.download_result(iid, best.result["id"], dl_target,
+                                              name=dl_name)
                 return {"mode": "download", "release": best.release,
                         "score": best.score, "bundle_id": info.get("bundle_id"),
-                        "target": target, "season": season}
+                        "target": dl_target, "season": season}
     # nothing available now -> persistent AutoSearch. Bake the required quality
     # into the search string so FulDC++ only grabs matching releases (the
     # server-side AutoSearch can't reuse the ranker's quality filter).
@@ -191,7 +213,13 @@ def hybrid_grab(client: FulDCClient, title: str, year: int | None, *,
     # Give the server the same size floor the ranker applies to live results —
     # otherwise AutoSearch happily grabs a 40 MB "sample" that rank() would
     # have thrown out at -40.
-    item = client.create_autosearch(matcher, target_directory=target,
+    # A season-pack AutoSearch matches the whole-season folder; drop it in the
+    # show folder (series\Show.year\<pack>\) rather than nesting it under S<NN>.
+    as_target = target
+    if kind == "series" and season:
+        as_target = resolve_target("series", title, series, dc_root, None, None,
+                                   movies_dir, series_dir, year)
+    item = client.create_autosearch(matcher, target_directory=as_target,
                                     excluded=BAD_SOURCE,
                                     expire_days=AUTOSEARCH_TTL_DAYS,
                                     matcher_type=matcher_type,
@@ -199,7 +227,7 @@ def hybrid_grab(client: FulDCClient, title: str, year: int | None, *,
                                     file_type="directory",
                                     min_size=_autosearch_min_size(prefs, kind, season))
     return {"mode": "autosearch", "matcher": matcher,
-            "autosearch_id": item.get("id"), "target": target, "season": season}
+            "autosearch_id": item.get("id"), "target": as_target, "season": season}
 
 
 def grab_tv_season(client: FulDCClient, show: str, season: int, *,
@@ -223,12 +251,15 @@ def grab_tv_season(client: FulDCClient, show: str, season: int, *,
             cands = rank(results, show, None, prefs, kind="series")
             if cands:
                 best = cands[0]
-                info = client.download_result(iid, best.result["id"], target,
-                                              name=best.release)
-                log(f"# season pack {best.release!r} -> {target}")
+                dl_target, dl_name = _download_placement(
+                    "series", show, None, dc_root, season, movies_dir,
+                    series_dir, year, best.release, target)
+                info = client.download_result(iid, best.result["id"], dl_target,
+                                              name=dl_name)
+                log(f"# season pack {best.release!r} -> {dl_target}")
                 return {"mode": "download", "release": best.release,
                         "score": best.score, "bundle_id": info.get("bundle_id"),
-                        "target": target, "season": season}
+                        "target": dl_target, "season": season}
     return monitor_tv_season(client, show, season, year=year, dc_root=dc_root,
                              movies_dir=movies_dir, series_dir=series_dir,
                              quality=quality, prefs=prefs, log=log)
