@@ -373,6 +373,32 @@ class TestCompleteFallback(unittest.TestCase):
             metadata._details = orig
 
 
+class TestQualityPreference(unittest.TestCase):
+    """QUALITY is a preference, not a hard filter: grab 1080p when it exists,
+    but don't exclude unlabeled/other-quality releases when no 1080p is shared
+    (anime/complete packs often carry no quality tag)."""
+
+    def _res(self, path):
+        return {"path": path, "type": {"id": "directory"},
+                "size": 3_000_000_000, "users": {"count": 5}}
+
+    def test_prefers_1080p_and_drops_720p_when_1080p_exists(self):
+        prefs = ranker.Prefs(require_quality=["1080p"])
+        cands = ranker.rank(
+            [self._res("/x/Show.S02.720p.BluRay-A"),
+             self._res("/x/Show.S02.1080p.BluRay-B")],
+            "Show", None, prefs, kind="series")
+        self.assertEqual(len(cands), 1)
+        self.assertIn("1080p", cands[0].release.lower())
+
+    def test_keeps_unlabeled_pack_when_no_1080p(self):
+        prefs = ranker.Prefs(require_quality=["1080p"])
+        cands = ranker.rank(
+            [self._res("/Anime/Show.S02.Stardust.Crusaders")],
+            "Show", None, prefs, kind="series")
+        self.assertEqual(len(cands), 1)  # unlabeled pack NOT filtered out
+
+
 class TestYearFolder(unittest.TestCase):
     def test_series_folder_gets_year(self):
         got = core.resolve_target("series", "Shameless", None, r"S:\dc", None, 3,
@@ -750,12 +776,15 @@ class TestRankerQuality(unittest.TestCase):
         self.assertTrue(ranker._token_in("up", "pixar up 2009 1080p"))
         self.assertFalse(ranker._token_in("up", "superman 2025 1080p"))
 
-    def test_hub_root_folder_cannot_satisfy_required_quality(self):
-        """Matching the whole path let a hub root named /1080p-Releases/ pass
-        require_quality for a 480p release."""
-        res = [self._res("/1080p-Releases/Dune.2021.DVDRip/480p/")]
-        self.assertEqual(
-            ranker.rank(res, "Dune", 2021, ranker.Prefs(require_quality=["1080p"])), [])
+    def test_hub_root_folder_does_not_count_as_real_quality(self):
+        """A hub root named /1080p-Releases/ must not make a 480p release count
+        as 1080p: when a real 1080p exists, the DVDRip is dropped for it
+        (quality is now a preference, so a lone DVDRip would still be kept)."""
+        res = [self._res("/1080p-Releases/Dune.2021.DVDRip/480p/"),
+               self._res("/x/Dune.2021.BluRay/1080p/")]
+        cands = ranker.rank(res, "Dune", 2021, ranker.Prefs(require_quality=["1080p"]))
+        self.assertEqual(len(cands), 1)
+        self.assertIn("bluray", cands[0].release.lower())
 
     def test_real_quality_subfolder_still_passes(self):
         res = [self._res("/1080p-Releases/Dune.2021.BluRay/1080p/")]

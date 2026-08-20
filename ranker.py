@@ -241,8 +241,14 @@ def rank(results: list[dict], title: str, year: int | None, prefs: Prefs,
         cands = [c for c in cands if not c.result.get("dupe")]
     if prefs.require_quality:
         want = [q.lower() for q in prefs.require_quality]
-        cands = [c for c in cands
-                 if any(q in c.quality_haystack() for q in want)]
+        # Quality is a PREFERENCE, not a hard requirement: keep the preferred
+        # quality when at least one result has it (so a 1080p is never passed
+        # over for a 720p), but fall back to whatever is available when none
+        # match — anime/complete-series packs often carry no quality tag at all.
+        preferred = [c for c in cands
+                     if any(q in c.quality_haystack() for q in want)]
+        if preferred:
+            cands = preferred
     # Tie-break deliberately rather than keeping arbitrary API order: more
     # sources first, then the larger file (usually the better encode).
     cands.sort(key=lambda c: (c.score,
