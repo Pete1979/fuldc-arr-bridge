@@ -1005,5 +1005,146 @@ class TestSeasonMonitor(unittest.TestCase):
                          "S:\\dc\\kids.series\\VeggieTales.2014\\S02\\")
 
 
+class TestTVmaze(unittest.TestCase):
+    """Keyless secondary season source. TMDB lags on continuing shows; TVmaze
+    already lists the new (undated) season."""
+
+    def _stub(self, get_json):
+        import tvmaze
+        orig = tvmaze._get_json
+        self.addCleanup(setattr, tvmaze, "_get_json", orig)
+        tvmaze._get_json = get_json
+
+    def test_undated_season_excluded(self):
+        import tvmaze
+        self._stub(lambda url, log=print: ({"id": 55} if "lookup" in url else
+                   [{"number": 1, "premiereDate": "2025-08-12"},
+                    {"number": 2, "premiereDate": None}]))
+        # S2 exists but hasn't aired -> not grabbed yet (the Alien: Earth case)
+        self.assertEqual(tvmaze.aired_seasons(tvdb_id=458912), {1})
+
+    def test_future_season_excluded(self):
+        import tvmaze
+        self._stub(lambda url, log=print: ({"id": 5} if "lookup" in url else
+                   [{"number": 1, "premiereDate": "2025-01-01"},
+                    {"number": 2, "premiereDate": "2099-01-01"}]))
+        self.assertEqual(tvmaze.aired_seasons(tvdb_id=1), {1})
+
+    def test_no_external_id_makes_no_call(self):
+        import tvmaze
+        seen = []
+        self._stub(lambda *a, **k: seen.append(1))
+        # without a TheTVDB/IMDb id we never do a fuzzy name lookup
+        self.assertEqual(tvmaze.aired_seasons(), set())
+        self.assertEqual(seen, [])
+
+
+class TestMetadataSecondary(unittest.TestCase):
+    def _patch(self, name, value):
+        orig = getattr(metadata, name)
+        self.addCleanup(setattr, metadata, name, orig)
+        setattr(metadata, name, value)
+
+    def test_external_ids_from_seerr_details(self):
+        self._patch("_details", lambda *a, **k: {
+            "externalIds": {"imdbId": "tt13623632", "tvdbId": 458912}})
+        self.assertEqual(metadata.external_ids(157239), ("tt13623632", 458912))
+
+    def test_seerr_tv_requests_filters_and_dedupes(self):
+        self.addCleanup(os.environ.pop, "SEERR_URL", None)
+        self.addCleanup(os.environ.pop, "SEERR_API_KEY", None)
+        os.environ["SEERR_URL"] = "http://seerr"
+        os.environ["SEERR_API_KEY"] = "k"
+        page = {"results": [{"media": {"mediaType": "tv", "tmdbId": 10}},
+                            {"media": {"mediaType": "movie", "tmdbId": 20}},
+                            {"media": {"mediaType": "tv", "tmdbId": 10}}]}
+        self._patch("_get_json", lambda url, headers=None, timeout=15.0: page)
+        self.assertEqual(metadata.seerr_tv_requests(), [10])
+
+    def test_year_and_title_helpers(self):
+        d = {"name": "Alien: Earth", "firstAirDate": "2025-08-12"}
+        self.assertEqual(metadata.title_of(d), "Alien: Earth")
+        self.assertEqual(metadata.year_of(d), 2025)
+
+
+class _ShareClient(FakeClient):
+    """FakeClient that answers find_dupe_paths from a set of present ADC paths."""
+
+    def __init__(self, present, autosearch=None):
+        super().__init__({("GET", "/auto_search/items"): (200, autosearch or [])})
+        self.present = set(present)
+
+    def _call(self, method, path, body=None):
+        if path == "/share/find_dupe_paths":
+            self.calls.append((method, path, body))
+            return (200, ["x"]) if (body or {}).get("path") in self.present else (200, [])
+        return super()._call(method, path, body)
+
+
+class TestSeasonMonitorSecondary(unittest.TestCase):
+    """Union of TMDB+TVmaze aired seasons, and the widened follow set that
+    covers pack-grabbed shows with no %[inc] monitor."""
+
+    def _patch(self, **kw):
+        import season_monitor
+        for name, value in kw.items():
+            orig = getattr(season_monitor, name)
+            self.addCleanup(setattr, season_monitor, name, orig)
+            setattr(season_monitor, name, value)
+
+    def test_tvmaze_supplies_season_tmdb_missed(self):
+        import season_monitor
+        c = FakeClient({("GET", "/auto_search/items"):
+                        (200, [{"id": 1, "search_string": "Alien.Earth S01E%[inc] 1080",
+                                "target": {"path": "S:\\dc\\series\\Alien.Earth.2025\\S01\\"}}])})
+        self._patch(find_tv_id=lambda name, log=print: 157239,
+                    aired_seasons=lambda tid, log=print: {1},          # TMDB blind to S2
+                    external_ids=lambda tid, log=print: ("tt1", 458912),
+                    tvmaze_aired=lambda **k: {1, 2},                   # TVmaze knows S2
+                    seerr_tv_requests=lambda log=print: [])
+        self.assertEqual(season_monitor.sweep(c, log=lambda m: None), 1)
+        self.assertIn("Alien.Earth S02E%[inc]",
+                      c.body_for("POST", "/auto_search/items")["search_string"])
+
+    def test_seerr_request_covers_pack_grabbed_show(self):
+        import season_monitor
+        c = _ShareClient({"/dc/series/Alien.Earth.2025/",
+                          "/dc/series/Alien.Earth.2025/S01/"})   # S01 on disk, no monitor
+        self._patch(seerr_tv_requests=lambda log=print: [157239],
+                    details=lambda tid, mt="tv", log=print: {
+                        "name": "Alien: Earth", "firstAirDate": "2025-08-12", "genres": []},
+                    external_ids=lambda tid, log=print: (None, 458912),
+                    aired_seasons=lambda tid, log=print: {1},
+                    tvmaze_aired=lambda **k: {1, 2})
+        self.assertEqual(season_monitor.sweep(c, log=lambda m: None), 1)
+        body = c.body_for("POST", "/auto_search/items")
+        self.assertIn("Alien.Earth S02E%[inc]", body["search_string"])
+        self.assertEqual(body["target"], "S:\\dc\\series\\Alien.Earth.2025\\S02\\")
+
+    def test_seerr_show_not_on_share_is_skipped(self):
+        import season_monitor
+        c = _ShareClient(set())   # nothing present -> not actually grabbed
+        self._patch(seerr_tv_requests=lambda log=print: [157239],
+                    details=lambda tid, mt="tv", log=print: {
+                        "name": "Alien: Earth", "firstAirDate": "2025-08-12", "genres": []},
+                    external_ids=lambda tid, log=print: (None, 458912),
+                    aired_seasons=lambda tid, log=print: {1},
+                    tvmaze_aired=lambda **k: {1, 2})
+        self.assertEqual(season_monitor.sweep(c, log=lambda m: None), 0)
+
+    def test_present_season_not_regrabbed(self):
+        import season_monitor
+        c = _ShareClient({"/dc/series/Alien.Earth.2025/",
+                          "/dc/series/Alien.Earth.2025/S01/",
+                          "/dc/series/Alien.Earth.2025/S02/"})   # S2 already there
+        self._patch(seerr_tv_requests=lambda log=print: [157239],
+                    details=lambda tid, mt="tv", log=print: {
+                        "name": "Alien: Earth", "firstAirDate": "2025-08-12", "genres": []},
+                    external_ids=lambda tid, log=print: (None, 458912),
+                    aired_seasons=lambda tid, log=print: {1},
+                    tvmaze_aired=lambda **k: {1, 2})
+        self.assertEqual(season_monitor.sweep(c, log=lambda m: None), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

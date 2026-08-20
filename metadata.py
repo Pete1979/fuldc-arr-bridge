@@ -176,3 +176,79 @@ def aired_seasons(tmdb_id: int | None, *, log=print) -> set[int]:
             out.add(int(n))
     return out
 
+
+def details(tmdb_id: int | None, media_type: str = "tv", *, log=print) -> dict | None:
+    """Public accessor for a title's metadata dict (or None)."""
+    return _details(tmdb_id, media_type, log=log)
+
+
+def external_ids(tmdb_id: int | None, media_type: str = "tv",
+                 *, log=print) -> tuple[str | None, int | None]:
+    """(imdb_id, tvdb_id) for a title, used to look the show up on TVmaze.
+
+    Seerr returns these in the details `externalIds`; TMDB's plain details omit
+    them, so fall back to TMDB's dedicated external_ids endpoint when a key is
+    configured."""
+    d = _details(tmdb_id, media_type, log=log)
+    if d:
+        ext = d.get("externalIds") or d.get("external_ids") or {}
+        imdb = ext.get("imdbId") or ext.get("imdb_id")
+        tvdb = ext.get("tvdbId") or ext.get("tvdb_id")
+        if imdb or tvdb:
+            return imdb, tvdb
+    tmdb_key = os.environ.get("TMDB_API_KEY", "").strip()
+    if tmdb_key and media_type == "tv" and tmdb_id:
+        try:
+            e = _get_json(f"{TMDB_BASE}/tv/{tmdb_id}/external_ids"
+                          f"?api_key={urllib.parse.quote(tmdb_key)}")
+            return e.get("imdb_id"), e.get("tvdb_id")
+        except Exception as e:  # noqa: BLE001 - best-effort
+            log(f"# external_ids lookup failed for tv {tmdb_id}: {e}")
+    return None, None
+
+
+def title_of(d: dict) -> str:
+    return (d.get("name") or d.get("title") or "").strip()
+
+
+def year_of(d: dict) -> int | None:
+    date = (d.get("firstAirDate") or d.get("first_air_date")
+            or d.get("releaseDate") or d.get("release_date") or "")[:4]
+    return int(date) if date.isdigit() else None
+
+
+def is_kids_details(d: dict) -> bool:
+    genres = [g.get("name", "") for g in d.get("genres", [])]
+    return any(name.lower() in _kids_genre_set() for name in genres)
+
+
+def seerr_tv_requests(*, log=print, page_size: int = 50,
+                      max_pages: int = 40) -> list[int]:
+    """Unique TMDB ids of every TV title requested in Seerr — the real set of
+    shows the user follows (a pack-grabbed show has no %[inc] monitor to key
+    off). Empty unless SEERR_URL + SEERR_API_KEY are configured."""
+    base = os.environ.get("SEERR_URL", "").strip()
+    key = os.environ.get("SEERR_API_KEY", "").strip()
+    if not (base and key):
+        return []
+    ids: list[int] = []
+    for page in range(max_pages):
+        url = (f"{base.rstrip('/')}/api/v1/request?take={page_size}"
+               f"&skip={page * page_size}&filter=all&sort=added")
+        try:
+            data = _get_json(url, headers={"X-Api-Key": key})
+        except Exception as e:  # noqa: BLE001 - best-effort
+            log(f"# seerr request list failed: {e}")
+            break
+        results = data.get("results") or []
+        for r in results:
+            m = r.get("media") or {}
+            if str(m.get("mediaType") or "").lower() == "tv" and m.get("tmdbId"):
+                try:
+                    ids.append(int(m["tmdbId"]))
+                except (TypeError, ValueError):
+                    pass
+        if len(results) < page_size:
+            break
+    return list(dict.fromkeys(ids))
+

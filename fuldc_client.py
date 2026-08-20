@@ -206,6 +206,18 @@ class FulDCClient:
                             {"remove_finished": remove_finished})
         return st in (200, 204)
 
+    # --- share -----------------------------------------------------------
+    def find_dupe_paths(self, adc_path: str) -> list:
+        """Real on-disk paths of a shared item at an ADC virtual path
+        (e.g. /dc/series/Show.2025/S02/), or [] if nothing is shared there.
+
+        A directory must carry a TRAILING SLASH or it is treated as a file path
+        and never matches — /dc/series/Show/S02 returns [] even when S02 is
+        shared, /dc/series/Show/S02/ returns its real path."""
+        st, data = self._call("POST", "/share/find_dupe_paths", {"path": adc_path})
+        return data if (st == 200 and isinstance(data, list)) else []
+
+
     # --- autosearch (FulDC++ core module) -------------------------------
     def list_autosearch(self) -> list[dict]:
         _, data = self._call("GET", "/auto_search/items")

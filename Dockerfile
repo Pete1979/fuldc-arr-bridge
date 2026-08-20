@@ -11,7 +11,7 @@ ENV PYTHONUNBUFFERED=1
 # stdlib-only app — no pip install needed
 WORKDIR /app
 # webhook flow + CLI
-COPY fuldc_client.py ranker.py core.py httputil.py notify.py plex.py metadata.py season_monitor.py webhook_server.py bridge.py ./
+COPY fuldc_client.py ranker.py core.py httputil.py notify.py plex.py metadata.py tvmaze.py season_monitor.py webhook_server.py bridge.py ./
 # Radarr/Sonarr flow (arr_server.py, run via the "arr" compose profile)
 COPY arr_server.py torznab.py qbit.py store.py ./
 
