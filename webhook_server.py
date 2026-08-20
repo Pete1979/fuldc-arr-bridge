@@ -115,7 +115,8 @@ def _after_download(c: FulDCClient, res: dict, kind: str) -> None:
         refresh(kind)
 
 
-def _grab(title, year, *, kind, season=None, movies_dir=None, series_dir=None):
+def _grab(title, year, *, kind, season=None, movies_dir=None, series_dir=None,
+          single_season=False):
     print(f"[grab] {title!r} ({year}) type={kind}" + (f" S{season:02d}" if season else ""),
           flush=True)
     try:
@@ -123,6 +124,7 @@ def _grab(title, year, *, kind, season=None, movies_dir=None, series_dir=None):
         res = hybrid_grab(c, title, year, kind=kind, season=season,
                           prefs=_prefs(), dc_root=os.environ.get("DC_ROOT", "S:\\dc"),
                           movies_dir=movies_dir, series_dir=series_dir,
+                          complete_fallback=single_season,
                           log=lambda m: print(m, flush=True))
         print(f"[done] {res}", flush=True)
         _after_download(c, res, kind)
@@ -173,7 +175,7 @@ def _handle(payload: dict) -> None:
     if not title:
         print("[skip] empty title", flush=True)
         return
-    kids, ended, alt = request_meta(tmdb, mtype, log=lambda m: print(m, flush=True))
+    kids, ended, alt, nseasons = request_meta(tmdb, mtype, log=lambda m: print(m, flush=True))
     if os.environ.get("KIDS_ROUTING", "1") != "1":
         kids = False
     # DC releases of a foreign film use its original title, but only when that
@@ -192,8 +194,10 @@ def _handle(payload: dict) -> None:
             # packs). Grab each requested season as a pack instead of a %[inc]
             # per-episode monitor that would never find anything.
             print(f"[ended] {title!r} -> season-pack grab (no %[inc] monitor)", flush=True)
+            single = nseasons == 1  # whole series may be shared as one COMPLETE pack
             for season in (seasons or [None]):
-                _grab(title, year, kind="series", season=season, series_dir=ser_dir)
+                _grab(title, year, kind="series", season=season,
+                      series_dir=ser_dir, single_season=single)
         elif seasons:
             for season in seasons:
                 _grab_season(title, season, series_dir=ser_dir, year=year)   # pack now, else %[inc] monitor

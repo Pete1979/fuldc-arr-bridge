@@ -105,22 +105,30 @@ def _download_placement(kind: str, title: str, series: str | None, dc_root: str,
     return season_target, release
 
 
-def _queries(title: str, year: int | None, kind: str, season: int | None) -> list[str]:
+def _queries(title: str, year: int | None, kind: str, season: int | None,
+             complete: bool = False) -> list[str]:
     if kind == "series" and season:
         base = scene_search(strip_leading_article(title))
-        return [f"{base} S{season:02d}", f"{base} S{season}"]
+        qs = [f"{base} S{season:02d}", f"{base} S{season}"]
+        if complete:
+            # a single-season show shared as one COMPLETE pack or with absolute
+            # episode numbering carries no S<NN> token, so also look for the
+            # whole series (ranker still prefers a pack over a single episode)
+            qs += [f"{base} COMPLETE", base]
+        return qs
     return search_queries(title, year)
 
 
 def run_search(client: FulDCClient, title: str, year: int | None,
                wait: float = 10.0, log=print, kind: str = "movie",
-               season: int | None = None, priority: int = PRIO_HIGH):
+               season: int | None = None, priority: int = PRIO_HIGH,
+               complete: bool = False):
     """Try fallback queries until one returns results. Returns (iid, results);
     iid may be None. Closes instances that yielded nothing.
 
     Pass PRIO_LOW for background/automated polling so those searches are the
     ones shed when the client's search queue backs up."""
-    for q in _queries(title, year, kind, season):
+    for q in _queries(title, year, kind, season, complete):
         log(f"# search {q!r}")
         iid, results = client.search(q, wait=wait, priority=priority)
         if results:
@@ -132,7 +140,8 @@ def run_search(client: FulDCClient, title: str, year: int | None,
 @contextmanager
 def searched(client: FulDCClient, title: str, year: int | None, *,
              wait: float = 10.0, log=print, kind: str = "movie",
-             season: int | None = None, priority: int = PRIO_HIGH):
+             season: int | None = None, priority: int = PRIO_HIGH,
+             complete: bool = False):
     """run_search, with the search instance guaranteed released.
 
     A FulDC++ search instance lives server-side until it is DELETEd or the
@@ -141,7 +150,7 @@ def searched(client: FulDCClient, title: str, year: int | None, *,
     pairing the calls by hand — every hand-paired site had at least one path
     that skipped the close.
     """
-    iid, results = run_search(client, title, year, wait, log, kind, season, priority)
+    iid, results = run_search(client, title, year, wait, log, kind, season, priority, complete)
     try:
         yield iid, results
     finally:
@@ -176,12 +185,13 @@ def hybrid_grab(client: FulDCClient, title: str, year: int | None, *,
                 season: int | None = None, prefs: Prefs | None = None,
                 dc_root: str = "S:\\dc", movies_dir: str | None = None,
                 series_dir: str | None = None, target: str | None = None,
+                complete_fallback: bool = False,
                 wait: float = 10.0, log=print) -> dict:
     prefs = prefs or Prefs()
     target = resolve_target(kind, title, series, dc_root, target, season,
                             movies_dir, series_dir, year)
     with searched(client, title, year, wait=wait, log=log,
-                  kind=kind, season=season) as (iid, results):
+                  kind=kind, season=season, complete=complete_fallback) as (iid, results):
         if results:
             cands = rank(results, title, year, prefs, kind=kind)
             if cands:

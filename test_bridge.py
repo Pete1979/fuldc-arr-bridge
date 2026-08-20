@@ -340,6 +340,39 @@ class TestSeasonPackPlacement(unittest.TestCase):
         self.assertEqual((tgt, name), (r"S:\dc\movies" + "\\", "Dune.2021.1080p.WEB"))
 
 
+class TestCompleteFallback(unittest.TestCase):
+    """A single-season ended show (esp. anime) is often shared as one COMPLETE
+    pack or absolute-numbered episodes with no S<NN> token, so the season grab
+    widens its search when the show has exactly one season."""
+
+    def test_single_season_adds_complete_and_bare_queries(self):
+        qs = core._queries("Fullmetal Alchemist Brotherhood", 2009, "series", 1,
+                           complete=True)
+        self.assertEqual(qs, [
+            "Fullmetal.Alchemist.Brotherhood S01",
+            "Fullmetal.Alchemist.Brotherhood S1",
+            "Fullmetal.Alchemist.Brotherhood COMPLETE",
+            "Fullmetal.Alchemist.Brotherhood",
+        ])
+
+    def test_default_keeps_only_season_queries(self):
+        qs = core._queries("Fullmetal Alchemist Brotherhood", 2009, "series", 1)
+        self.assertEqual(qs, ["Fullmetal.Alchemist.Brotherhood S01",
+                              "Fullmetal.Alchemist.Brotherhood S1"])
+
+    def test_request_meta_returns_season_count(self):
+        import metadata
+        orig = metadata._details
+        metadata._details = lambda *a, **k: {
+            "genres": [], "status": "Ended",
+            "number_of_seasons": 1, "original_language": "en"}
+        try:
+            self.assertEqual(metadata.request_meta(123, "tv"),
+                             (False, True, None, 1))
+        finally:
+            metadata._details = orig
+
+
 class TestYearFolder(unittest.TestCase):
     def test_series_folder_gets_year(self):
         got = core.resolve_target("series", "Shameless", None, r"S:\dc", None, 3,

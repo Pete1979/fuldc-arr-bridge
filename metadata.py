@@ -109,17 +109,20 @@ def classify(tmdb_id: int | None, media_type: str, *, log=print) -> tuple[bool, 
 
 
 def request_meta(tmdb_id: int | None, media_type: str,
-                 *, log=print) -> tuple[bool, bool, str | None]:
-    """(is_kids, is_ended, original_title) from a single metadata lookup.
+                 *, log=print) -> tuple[bool, bool, str | None, int | None]:
+    """(is_kids, is_ended, original_title, number_of_seasons) from one lookup.
 
     original_title is the non-English original-language title (what DC scene
     releases of foreign films are named), or None when English/unavailable.
+    number_of_seasons lets the grab widen its search for a single-season show
+    (whole series often shared as one COMPLETE pack with no S<NN> token).
     """
     d = _details(tmdb_id, media_type, log=log)
     if not d:
-        return False, False, None
+        return False, False, None, None
     kids, ended = _flags(d, media_type)
-    return kids, ended, _original_title(d)
+    nseasons = d.get("number_of_seasons") or d.get("numberOfSeasons")
+    return kids, ended, _original_title(d), nseasons
 
 
 def is_kids(tmdb_id: int | None, media_type: str, *, log=print) -> bool:
