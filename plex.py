@@ -7,9 +7,17 @@ scan.
 
 from __future__ import annotations
 
+import ssl
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+
+# Plex serves HTTPS on 32400 with a *.plex.direct cert that never matches a raw
+# LAN IP, so direct-IP access can't verify the hostname. The link is still TLS —
+# we just skip cert validation, which is the norm for local Plex API access.
+_TLS = ssl.create_default_context()
+_TLS.check_hostname = False
+_TLS.verify_mode = ssl.CERT_NONE
 
 
 class Plex:
@@ -22,7 +30,8 @@ class Plex:
         params = dict(params or {})
         params["X-Plex-Token"] = self.token
         url = f"{self.base}{path}?{urllib.parse.urlencode(params)}"
-        with urllib.request.urlopen(url, timeout=self.timeout) as r:
+        ctx = _TLS if url.lower().startswith("https") else None
+        with urllib.request.urlopen(url, timeout=self.timeout, context=ctx) as r:
             return r.read()
 
     def sections(self) -> list[dict]:
