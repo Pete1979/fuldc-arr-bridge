@@ -7,10 +7,16 @@ scan.
 
 from __future__ import annotations
 
+import re
 import ssl
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+
+# Plex disambiguates duplicate titles by appending "(YYYY)" to the title itself;
+# the year is also in the `year` attr, so strip it or the folder double-years
+# (Littlest Pet Shop (2012) -> Littlest.Pet.Shop.2012.2012).
+_YEAR_SUFFIX = re.compile(r"\s*\((\d{4})\)\s*$")
 
 # Plex serves HTTPS on 32400 with a *.plex.direct cert that never matches a raw
 # LAN IP, so direct-IP access can't verify the hostname. The link is still TLS —
@@ -64,9 +70,11 @@ class Plex:
                         if gid.startswith(pref):
                             ids[key] = gid[len(pref):]
                 yr = d.get("year") or ""
+                raw = d.get("title") or ""
+                m = _YEAR_SUFFIX.search(raw)
                 out.append({
-                    "title": d.get("title"),
-                    "year": int(yr) if yr.isdigit() else None,
+                    "title": _YEAR_SUFFIX.sub("", raw),
+                    "year": int(yr) if yr.isdigit() else (int(m.group(1)) if m else None),
                     "tmdb": int(ids["tmdb"]) if ids.get("tmdb", "").isdigit() else None,
                     "tvdb": int(ids["tvdb"]) if ids.get("tvdb", "").isdigit() else None,
                     "imdb": ids.get("imdb"),

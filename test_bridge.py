@@ -1180,9 +1180,14 @@ class TestLibraryEnumeration(unittest.TestCase):
         p._get = lambda path, params=None: (
             b'<MediaContainer><Directory title="Alien: Earth" year="2025">'
             b'<Guid id="tmdb://157239"/><Guid id="tvdb://458912"/></Directory>'
+            b'<Directory title="Littlest Pet Shop (2012)" year="2012"/>'
             b'</MediaContainer>')
-        self.assertEqual(p.all_shows(), [{"title": "Alien: Earth", "year": 2025,
-                                          "tmdb": 157239, "tvdb": 458912, "imdb": None}])
+        self.assertEqual(p.all_shows(), [
+            {"title": "Alien: Earth", "year": 2025,
+             "tmdb": 157239, "tvdb": 458912, "imdb": None},
+            # embedded "(2012)" stripped so the folder doesn't double-year
+            {"title": "Littlest Pet Shop", "year": 2012,
+             "tmdb": None, "tvdb": None, "imdb": None}])
 
 
 class TestSeasonMonitorLibrary(unittest.TestCase):
