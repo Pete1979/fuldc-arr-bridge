@@ -14,7 +14,7 @@ from contextlib import contextmanager
 
 from fuldc_client import PRIO_HIGH, FulDCClient
 from ranker import (Prefs, rank, search_queries, strip_leading_article,
-                    scene_title, scene_search, SEASON_EP_RE)
+                    scene_title, scene_search, matches_season, SEASON_EP_RE)
 
 # Excluded words for server-side AutoSearch.
 #
@@ -194,6 +194,10 @@ def hybrid_grab(client: FulDCClient, title: str, year: int | None, *,
                   kind=kind, season=season, complete=complete_fallback) as (iid, results):
         if results:
             cands = rank(results, title, year, prefs, kind=kind)
+            # a season grab must not accept a different season's pack (a hub
+            # search for 'Show S02' can loosely return the 'Show S01' pack)
+            if season:
+                cands = [c for c in cands if matches_season(c.release, season)]
             if cands:
                 best = cands[0]
                 dl_target, dl_name = _download_placement(
@@ -259,6 +263,7 @@ def grab_tv_season(client: FulDCClient, show: str, season: int, *,
                   kind="series", season=season) as (iid, results):
         if results:
             cands = rank(results, show, None, prefs, kind="series")
+            cands = [c for c in cands if matches_season(c.release, season)]
             if cands:
                 best = cands[0]
                 dl_target, dl_name = _download_placement(

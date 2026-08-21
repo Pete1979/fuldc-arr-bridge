@@ -1232,5 +1232,30 @@ class TestSeasonMonitorLibrary(unittest.TestCase):
         self.assertEqual(season_monitor.sweep(c, log=lambda m: None), 0)
 
 
+class TestSeasonMatch(unittest.TestCase):
+    """A season grab must not accept a different season's pack (a hub search for
+    'Show S02' can loosely return the 'Show S01' pack — the Ahsoka bug)."""
+
+    def test_result_seasons(self):
+        self.assertEqual(ranker.result_seasons("Ahsoka.S01.1080p.BluRay.x264-BROADCAST"), {1})
+        self.assertEqual(ranker.result_seasons("Ahsoka.S02E05.1080p"), {2})
+        self.assertEqual(ranker.result_seasons("Ahsoka.COMPLETE.1080p"), set())
+
+    def test_matches_season(self):
+        self.assertFalse(ranker.matches_season("Ahsoka.S01.1080p", 2))
+        self.assertTrue(ranker.matches_season("Ahsoka.S02.1080p", 2))
+        self.assertTrue(ranker.matches_season("Ahsoka.COMPLETE.1080p", 2))  # ambiguous ok
+
+    def test_grab_tv_season_rejects_wrong_season_pack(self):
+        s01 = [{"id": "t1", "path": "/d/Ahsoka.S01.1080p.BluRay.x264-BROADCAST/",
+                "size": 40 * 1024**3, "users": {"count": 6}, "slots": {"free": 4},
+                "type": {"id": "directory"}}]
+        c = FakeClient({("GET", "/search/1/results/0/200"): (200, s01)})
+        res = core.grab_tv_season(c, "Ahsoka", 2, year=2023, wait=0, log=lambda m: None)
+        self.assertEqual(res["mode"], "monitor")   # rejected S01, fell to %[inc]
+        self.assertFalse(any("/download" in p for _, p, _ in c.calls),
+                         "must not download the wrong-season pack")
+
+
 if __name__ == "__main__":
     unittest.main()

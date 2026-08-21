@@ -15,6 +15,24 @@ YEAR_RE = re.compile(r"(19\d\d|20\d\d)")
 SEASON_EP_RE = re.compile(r"s(\d{1,2})e(\d{1,3})", re.IGNORECASE)   # S01E03 single episode
 SEASON_RE = re.compile(r"(?:^|[^a-z])s(\d{1,2})(?![a-z0-9])", re.IGNORECASE)  # S01 (no Exx)
 COMPLETE_RE = re.compile(r"\b(complete|hela\s+serien|full\s+season)\b", re.IGNORECASE)
+
+
+def result_seasons(name: str) -> set[int]:
+    """Season numbers present in a release name (from S01 or S01E03 tokens)."""
+    s = name or ""
+    return ({int(m.group(1)) for m in SEASON_EP_RE.finditer(s)}
+            | {int(m.group(1)) for m in SEASON_RE.finditer(s)})
+
+
+def matches_season(name: str, season: int) -> bool:
+    """False when the release is clearly a DIFFERENT season than requested.
+
+    A season grab must not accept another season's pack: a hub search for
+    'Show S02' ANDs loosely and can return the 'Show S01' pack. A release with
+    no season token at all is allowed (an ambiguous COMPLETE pack)."""
+    rs = result_seasons(name)
+    return (not rs) or (season in rs)
+
 QUALITY_ONLY = {"1080p", "720p", "480p", "2160p", "4k", "uhd", "1080", "720", "2160"}
 CODEC_TOKENS = {"x264", "x265", "h264", "h265", "hevc", "avc", "xvid"}
 LANG_TOKENS = {"swesub", "swedish", "nordic", "multi", "sv", "en"}
