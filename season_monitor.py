@@ -35,7 +35,9 @@ from fuldc_client import FulDCClient
 from metadata import (aired_seasons, details, external_ids, find_tv_id,
                       is_kids_details, seerr_tv_requests, title_of, year_of)
 from tvmaze import aired_seasons as tvmaze_aired
-from core import monitor_tv_season, resolve_target
+from ranker import scene_title
+from core import monitor_tv_season, resolve_target, safe_component
+import library
 
 # capture the series root (series or kids.series), the show folder and season
 _TARGET = re.compile(
@@ -111,6 +113,18 @@ def _present_seasons(client: FulDCClient, adc_show: str, upto: int) -> set[int]:
     return out
 
 
+def _locate(client: FulDCClient, dc_root: str, folder: str):
+    """Which series root (series vs kids.series) actually holds this show on the
+    share, if any. Lets a library show route correctly without needing genres —
+    and drops shows not in the DC share (nothing to grab into)."""
+    for kids in (False, True):
+        sdir = _series_dir(kids, dc_root).rstrip("\\/")
+        adc = _adc(sdir + "\\" + folder + "\\")
+        if _folder_present(client, adc):
+            return sdir, adc
+    return None, None
+
+
 def _monitored(client: FulDCClient) -> dict[tuple[str, str], dict]:
     """Group the live %[inc] monitors by (series-root, show-folder)."""
     shows: dict[tuple[str, str], dict] = {}
@@ -181,6 +195,25 @@ def _collect_targets(client: FulDCClient, dc_root: str,
             folder=folder, adc_show=adc, tmdb=tid, monitored=set(),
             quality=default_quality))
         t["tmdb"] = t["tmdb"] or tid
+
+    # optional: every show in your media-server library (MONITOR_LIBRARY=1),
+    # located to whichever DC root actually holds it
+    for sh in library.owned_shows(log=log):
+        name = sh.get("title") or ""
+        if not name:
+            continue
+        yr = sh.get("year")
+        folder = scene_title(safe_component(name))
+        if yr:
+            folder = f"{folder}.{yr}"
+        sdir, adc = _locate(client, dc_root, folder)
+        if not sdir:
+            continue  # not in the DC share -> nothing to grab into
+        t = targets.setdefault(adc.lower(), dict(
+            show=name, query=name, year=yr, series_dir=sdir, folder=folder,
+            adc_show=adc, tmdb=sh.get("tmdb"), monitored=set(),
+            quality=default_quality))
+        t["tmdb"] = t["tmdb"] or sh.get("tmdb")
     return targets
 
 

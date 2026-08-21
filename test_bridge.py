@@ -1146,5 +1146,84 @@ class TestSeasonMonitorSecondary(unittest.TestCase):
         self.assertEqual(season_monitor.sweep(c, log=lambda m: None), 0)
 
 
+class TestLibraryEnumeration(unittest.TestCase):
+    """Pluggable, media-server-agnostic library source (opt-in)."""
+
+    def _env(self, **kw):
+        for k, v in kw.items():
+            self.addCleanup(os.environ.pop, k, None)
+            os.environ[k] = v
+
+    def test_disabled_by_default(self):
+        import library
+        self.assertEqual(library.owned_shows(log=lambda m: None), [])
+
+    def test_unknown_backend_is_empty(self):
+        import library
+        self._env(MONITOR_LIBRARY="1", MEDIASERVER="kodi")
+        self.assertEqual(library.owned_shows(log=lambda m: None), [])
+
+    def test_plex_backend_dispatch(self):
+        import library
+        self._env(MONITOR_LIBRARY="1", MEDIASERVER="plex")
+        orig = library._plex_shows
+        self.addCleanup(setattr, library, "_plex_shows", orig)
+        library._plex_shows = lambda log: [{"title": "X", "year": 2025, "tmdb": 1}]
+        self.assertEqual(library.owned_shows(log=lambda m: None)[0]["title"], "X")
+
+    def test_plex_all_shows_parses_ids(self):
+        from plex import Plex
+        p = Plex("http://x", "t")
+        p.sections = lambda: [{"key": "2", "type": "show", "title": "TV"}]
+        p._get = lambda path, params=None: (
+            b'<MediaContainer><Directory title="Alien: Earth" year="2025">'
+            b'<Guid id="tmdb://157239"/><Guid id="tvdb://458912"/></Directory>'
+            b'</MediaContainer>')
+        self.assertEqual(p.all_shows(), [{"title": "Alien: Earth", "year": 2025,
+                                          "tmdb": 157239, "tvdb": 458912, "imdb": None}])
+
+
+class TestSeasonMonitorLibrary(unittest.TestCase):
+    """A show owned in the media-server library (no monitor, no Seerr request)
+    still gets its new season, located to the right DC root."""
+
+    def _patch(self, **kw):
+        import season_monitor
+        for name, value in kw.items():
+            orig = getattr(season_monitor, name)
+            self.addCleanup(setattr, season_monitor, name, orig)
+            setattr(season_monitor, name, value)
+
+    def test_library_show_gets_new_season(self):
+        import season_monitor
+        import library
+        c = _ShareClient({"/dc/series/Murderbot.2025/",
+                          "/dc/series/Murderbot.2025/S01/"})
+        self.addCleanup(setattr, library, "owned_shows", library.owned_shows)
+        library.owned_shows = lambda log=print: [
+            {"title": "Murderbot", "year": 2025, "tmdb": 1, "tvdb": 222}]
+        self._patch(seerr_tv_requests=lambda log=print: [],
+                    external_ids=lambda tid, log=print: (None, 222),
+                    aired_seasons=lambda tid, log=print: {1},
+                    tvmaze_aired=lambda **k: {1, 2})
+        self.assertEqual(season_monitor.sweep(c, log=lambda m: None), 1)
+        body = c.body_for("POST", "/auto_search/items")
+        self.assertIn("Murderbot S02E%[inc]", body["search_string"])
+        self.assertEqual(body["target"], "S:\\dc\\series\\Murderbot.2025\\S02\\")
+
+    def test_library_show_not_on_share_skipped(self):
+        import season_monitor
+        import library
+        c = _ShareClient(set())   # owned in Plex but not in the DC share
+        self.addCleanup(setattr, library, "owned_shows", library.owned_shows)
+        library.owned_shows = lambda log=print: [
+            {"title": "Murderbot", "year": 2025, "tmdb": 1}]
+        self._patch(seerr_tv_requests=lambda log=print: [],
+                    external_ids=lambda tid, log=print: (None, None),
+                    aired_seasons=lambda tid, log=print: {1, 2},
+                    tvmaze_aired=lambda **k: set())
+        self.assertEqual(season_monitor.sweep(c, log=lambda m: None), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

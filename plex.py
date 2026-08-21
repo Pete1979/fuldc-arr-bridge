@@ -36,6 +36,34 @@ class Plex:
                 return s["key"]
         return None
 
+    def all_shows(self) -> list[dict]:
+        """Every series in every TV (type=show) section, with the tmdb/tvdb/imdb
+        ids Plex resolved. includeGuids=1 attaches <Guid id="tmdb://..."> children
+        (the new Plex agent's own guid is an opaque plex:// id otherwise)."""
+        out: list[dict] = []
+        for s in self.sections():
+            if s.get("type") != "show":
+                continue
+            root = ET.fromstring(self._get(f"/library/sections/{s['key']}/all",
+                                           {"type": "2", "includeGuids": "1"}))
+            for d in root.findall("Directory"):
+                ids: dict[str, str] = {}
+                for g in d.findall("Guid"):
+                    gid = g.get("id") or ""
+                    for pref, key in (("tmdb://", "tmdb"), ("tvdb://", "tvdb"),
+                                      ("imdb://", "imdb")):
+                        if gid.startswith(pref):
+                            ids[key] = gid[len(pref):]
+                yr = d.get("year") or ""
+                out.append({
+                    "title": d.get("title"),
+                    "year": int(yr) if yr.isdigit() else None,
+                    "tmdb": int(ids["tmdb"]) if ids.get("tmdb", "").isdigit() else None,
+                    "tvdb": int(ids["tvdb"]) if ids.get("tvdb", "").isdigit() else None,
+                    "imdb": ids.get("imdb"),
+                })
+        return out
+
     def scan(self, section_key: str, path: str | None = None) -> None:
         """Trigger a scan of a section, optionally scoped to a folder path
         (the path must be as PLEX sees it, not the FulDC++ Windows path)."""
