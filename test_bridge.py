@@ -1156,6 +1156,8 @@ class TestLibraryEnumeration(unittest.TestCase):
 
     def test_disabled_by_default(self):
         import library
+        self.addCleanup(os.environ.pop, "MONITOR_LIBRARY", None)
+        os.environ.pop("MONITOR_LIBRARY", None)
         self.assertEqual(library.owned_shows(log=lambda m: None), [])
 
     def test_unknown_backend_is_empty(self):
