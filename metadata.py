@@ -177,6 +177,24 @@ def aired_seasons(tmdb_id: int | None, *, log=print) -> set[int]:
     return out
 
 
+def aired_season_dates(tmdb_id: int | None, *, log=print) -> dict[int, str]:
+    """{season number -> ISO air date} for seasons that have started airing.
+
+    Same source as aired_seasons(), but keeps the dates so the sweep can tell a
+    genuinely new season from a decade-old one on an ended show."""
+    d = _details(tmdb_id, "tv", log=log)
+    if not d:
+        return {}
+    today = datetime.date.today().isoformat()
+    out: dict[int, str] = {}
+    for s in d.get("seasons", []):
+        n = s.get("seasonNumber", s.get("season_number", 0)) or 0
+        air = (s.get("airDate") or s.get("air_date") or "")[:10]
+        if n > 0 and air and air <= today:
+            out[int(n)] = air
+    return out
+
+
 def details(tmdb_id: int | None, media_type: str = "tv", *, log=print) -> dict | None:
     """Public accessor for a title's metadata dict (or None)."""
     return _details(tmdb_id, media_type, log=log)

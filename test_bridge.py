@@ -1005,6 +1005,58 @@ class TestSeasonMonitor(unittest.TestCase):
                          "S:\\dc\\kids.series\\VeggieTales.2014\\S02\\")
 
 
+class TestSeasonRecency(unittest.TestCase):
+    """A new season is auto-grabbed only if it aired recently. Older aired
+    seasons of a show you're merely behind on are backfill (request via Seerr),
+    not a new drop — so an ended show doesn't get its whole tail pulled in."""
+
+    def _client(self, search_string, target):
+        return FakeClient({("GET", "/auto_search/items"):
+                           (200, [{"id": 1, "search_string": search_string,
+                                   "target": {"path": target}}])})
+
+    def _stub(self, dates):
+        import season_monitor
+        for name, val in (("find_tv_id", lambda name, log=print: 42),
+                          ("aired_seasons", lambda tid, log=print: set(dates)),
+                          ("tvmaze_aired", lambda **k: set()),
+                          ("external_ids", lambda tid, log=print: (None, None)),
+                          ("aired_season_dates", lambda tid, log=print: dates),
+                          ("tvmaze_dates", lambda **k: {})):
+            self.addCleanup(setattr, season_monitor, name,
+                            getattr(season_monitor, name))
+            setattr(season_monitor, name, val)
+
+    def test_old_seasons_not_backfilled(self):
+        import season_monitor
+        c = self._client("Curious.George S06E%[inc] 1080",
+                         "S:\\dc\\kids.series\\Curious.George.2006\\S06\\")
+        old = "2015-01-01"
+        self._stub({6: old, 7: old, 8: old, 9: old})
+        # user has S06; TVmaze lists through S09 but all aired a decade ago
+        self.assertEqual(season_monitor.sweep(c, log=lambda m: None), 0)
+
+    def test_recent_new_season_grabbed(self):
+        import datetime
+        import season_monitor
+        c = self._client("The.Boys S04E%[inc] 1080",
+                         "S:\\dc\\series\\The.Boys.2019\\S04\\")
+        recent = (datetime.date.today() - datetime.timedelta(days=10)).isoformat()
+        self._stub({4: "2022-01-01", 5: recent})
+        self.assertEqual(season_monitor.sweep(c, log=lambda m: None), 1)
+        self.assertIn("The.Boys S05E%[inc]",
+                      c.body_for("POST", "/auto_search/items")["search_string"])
+
+    def test_undated_season_still_grabbed(self):
+        import season_monitor
+        c = self._client("Foo S01E%[inc] 1080",
+                         "S:\\dc\\series\\Foo.2020\\S01\\")
+        # aired set has S02 but no date is known for it -> fall back to grabbing
+        self._stub({1: "2020-01-01"})
+        season_monitor.aired_seasons = lambda tid, log=print: {1, 2}
+        self.assertEqual(season_monitor.sweep(c, log=lambda m: None), 1)
+
+
 class TestTVmaze(unittest.TestCase):
     """Keyless secondary season source. TMDB lags on continuing shows; TVmaze
     already lists the new (undated) season."""

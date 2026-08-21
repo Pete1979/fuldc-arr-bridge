@@ -87,3 +87,24 @@ def aired_seasons(imdb_id: str | None = None, tvdb_id: int | None = None,
         if n > 0 and premiere and premiere <= today:
             out.add(int(n))
     return out
+
+
+def aired_season_dates(imdb_id: str | None = None, tvdb_id: int | None = None,
+                       name: str | None = None, *, log=print) -> dict[int, str]:
+    """{season number -> ISO premiere date} for seasons already airing, per
+    TVmaze. Same source as aired_seasons(), but keeps the dates so the sweep can
+    distinguish a brand-new season from a decade-old one on an ended show."""
+    sid = _show_id(imdb_id, tvdb_id, name, log=log)
+    if sid is None:
+        return {}
+    seasons = _get_json(f"{TVMAZE_BASE}/shows/{sid}/seasons", log=log)
+    if not isinstance(seasons, list):
+        return {}
+    today = datetime.date.today().isoformat()
+    out: dict[int, str] = {}
+    for s in seasons:
+        n = s.get("number") or 0
+        premiere = (s.get("premiereDate") or "")[:10]
+        if n > 0 and premiere and premiere <= today:
+            out[int(n)] = premiere
+    return out

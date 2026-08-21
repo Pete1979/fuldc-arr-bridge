@@ -16,9 +16,11 @@ Two things make this hard on this setup, both fixed here:
     requests. For a pack-grabbed show we read the seasons actually on the share
     (FulDC++ find_dupe_paths) to know the newest one you have.
 
-Self-limiting: only seasons that (a) have aired and (b) are newer than the
-highest one already present/monitored are grabbed — it never backfills old gaps
-or grabs a season before it airs. Additive only; nothing is removed.
+Self-limiting: only seasons that (a) have aired, (b) are newer than the highest
+one already present/monitored, and (c) aired recently (within SEASON_RECENT_DAYS,
+default 540) are grabbed — so it never backfills old gaps, grabs a season before
+it airs, or pulls the whole tail of an ended show you're a few seasons behind on
+(that's what a Seerr request is for). Additive only; nothing is removed.
 
 Needs a metadata source (TMDB_API_KEY or SEERR_URL+SEERR_API_KEY); a no-op
 without one.
@@ -26,14 +28,17 @@ without one.
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
 import urllib.request
 
 from fuldc_client import FulDCClient
-from metadata import (aired_seasons, details, external_ids, find_tv_id,
-                      is_kids_details, seerr_tv_requests, title_of, year_of)
+from metadata import (aired_season_dates, aired_seasons, details, external_ids,
+                      find_tv_id, is_kids_details, seerr_tv_requests, title_of,
+                      year_of)
+from tvmaze import aired_season_dates as tvmaze_dates
 from tvmaze import aired_seasons as tvmaze_aired
 from ranker import scene_title
 from core import monitor_tv_season, resolve_target, safe_component
@@ -46,6 +51,17 @@ _TARGET = re.compile(
 )
 _YEAR = re.compile(r"\.(\d{4})$")
 _DRIVE = re.compile(r"^[A-Za-z]:")
+
+
+def _recent_days() -> int:
+    """How recently a season must have aired to count as a *new* season worth
+    auto-grabbing. Older aired seasons are treated as backfill (request via
+    Seerr) rather than grabbed, so an ended show you're a few seasons behind on
+    doesn't get its whole tail pulled in. Configurable via SEASON_RECENT_DAYS."""
+    try:
+        return max(1, int(os.environ.get("SEASON_RECENT_DAYS", "540")))
+    except ValueError:
+        return 540
 
 
 def _adc(win_path: str) -> str:
@@ -227,6 +243,14 @@ def _process(client: FulDCClient, t: dict, occupied: list[str], dc_root: str,
     aired = aired_seasons(tid, log=log) | tvmaze_aired(imdb_id=imdb, tvdb_id=tvdb, log=log)
     if not aired:
         return 0
+    # Air dates let us tell a genuinely new season from a decade-old one on an
+    # ended show the user is merely behind on: the latter must NOT be
+    # auto-backfilled (that's what a Seerr request is for). A season with no
+    # known date falls through to the old "grab it" behaviour.
+    dates = {**tvmaze_dates(imdb_id=imdb, tvdb_id=tvdb, log=log),
+             **aired_season_dates(tid, log=log)}
+    cutoff = (datetime.date.today()
+              - datetime.timedelta(days=_recent_days())).isoformat()
 
     if t["monitored"]:
         baseline = max(t["monitored"])
@@ -244,6 +268,13 @@ def _process(client: FulDCClient, t: dict, occupied: list[str], dc_root: str,
     added = 0
     for s in sorted(aired):
         if s <= baseline or _busy(occupied, t["folder"], s):
+            continue
+        premiere = dates.get(s)
+        if premiere and premiere < cutoff:
+            # aired too long ago to be a *new* season — this is backfill on a
+            # show you're behind on, not a new drop. Leave it for a Seerr request.
+            log(f"# [season] skip {t['query']} S{s:02d} (aired {premiere}, "
+                f"older than {_recent_days()}d) — backfill, request via Seerr")
             continue
         res = monitor_tv_season(client, t["show"], s, year=t["year"],
                                 dc_root=dc_root, movies_dir=movies_dir,
