@@ -99,6 +99,8 @@ Then request something → approve it → watch `docker compose logs -f`.
 | `SEASON_CHECK_HOURS` | `0` | auto new-season detection: every N hours, add a `%[inc]` monitor for a newly-aired season of a show you follow — live `%[inc]` monitors **and** your Seerr TV requests (so pack-grabbed shows are covered). Aired seasons = TMDB ∪ TVmaze (keyless, covers TMDB's lag on continuing shows). Needs a metadata source; `0` = off |
 | `SEASON_NOTIFY_WEBHOOK` | – | optional URL to POST a `{event,show,season,mode,target}` ping to when a new season is detected (Discord/ntfy/HA/…) |
 | `MONITOR_LIBRARY` | `0` | `1` = also follow every series in your media-server library (via `MEDIASERVER`), not just Seerr requests — so a show you own but never re-requested still gets new seasons. Falls back to Seerr requests + monitors if no supported media server is set |
+| `SEASON_RECENT_DAYS` | `540` | only auto-grab a new season that aired within this many days; older aired seasons of a show you're behind on are treated as backfill (request via Seerr) rather than pulled in |
+| `PRUNE_UNSHARED` | `0` | `1` = when a followed show's folder is deleted from your share, remove its `%[inc]` episode monitor on the next sweep (only if it had grabbed episodes and nothing is downloading into it) — makes share-deletion the single "stop following" switch |
 | `MEDIASERVER` | `none` | optional post-download refresh: `plex` \| `jellyfin` \| `webhook` \| `none` |
 | `WEBHOOK_TOKEN` | *(empty)* | shared secret for the webhook endpoint. Blank = **anyone who can reach the port can queue downloads** — set it unless the port is strictly LAN-internal |
 | `PORT` | `8080` | webhook listen port |

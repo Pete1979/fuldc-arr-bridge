@@ -1133,6 +1133,115 @@ class _ShareClient(FakeClient):
         return super()._call(method, path, body)
 
 
+class _PruneClient(_ShareClient):
+    """_ShareClient with a controllable bundle list + delete accounting."""
+
+    def __init__(self, present, autosearch, bundles=None):
+        super().__init__(present, autosearch)
+        self._bundles = bundles or []
+
+    def list_bundles(self, *a, **kw):
+        return self._bundles
+
+    @property
+    def deleted(self):
+        return [int(p.rsplit("/", 1)[1]) for m, p, _ in self.calls
+                if m == "DELETE" and p.startswith("/auto_search/items/")]
+
+
+class TestLoosePartExclude(unittest.TestCase):
+    """A single RAR volume (…-GROUP.r04) must never be grabbed in place of the
+    release folder — the durable backstop for FulDC++ dropping file_type."""
+
+    def test_episode_monitor_excludes_rar_parts(self):
+        c = FakeClient()
+        core.monitor_tv_season(c, "Silo", 3, log=lambda m: None)
+        exc = c.body_for("POST", "/auto_search/items").get("excluded_string", "")
+        for tok in (".r0", ".r4", ".r9", ".rar"):
+            self.assertIn(tok, exc)
+        # still keeps the real bad-source excludes
+        self.assertIn("camrip", exc)
+
+
+class TestReassertGuards(unittest.TestCase):
+    """FulDC++ resets file_type directory->any on its save cycle; the sweep
+    re-pins directory + loose-part excludes on every enabled %[inc] monitor."""
+
+    def _item(self, **kw):
+        base = {"id": 7, "enabled": True, "file_type": "0", "excluded_string": "camrip",
+                "search_string": "Silo S03E%[inc] 1080p",
+                "target": {"path": "S:\\dc\\series\\Silo.2023\\S03\\"}}
+        base.update(kw)
+        return base
+
+    def test_repins_directory_and_loose_excludes(self):
+        import season_monitor
+        c = FakeClient({("GET", "/auto_search/items"): (200, [self._item()])})
+        self.assertEqual(season_monitor._reassert_guards(c, lambda m: None), 1)
+        patch = c.body_for("PATCH", "/auto_search/items/7")
+        self.assertEqual(patch.get("file_type"), "directory")
+        self.assertIn(".r0", patch.get("excluded_string", ""))
+
+    def test_noop_when_already_pinned(self):
+        import season_monitor
+        c = FakeClient({("GET", "/auto_search/items"):
+                        (200, [self._item(file_type="7", excluded_string="camrip .r0 .rar")])})
+        self.assertEqual(season_monitor._reassert_guards(c, lambda m: None), 0)
+
+    def test_skips_disabled_items(self):
+        import season_monitor
+        c = FakeClient({("GET", "/auto_search/items"): (200, [self._item(enabled=False)])})
+        self.assertEqual(season_monitor._reassert_guards(c, lambda m: None), 0)
+
+
+class TestPruneUnshared(unittest.TestCase):
+    """PRUNE_UNSHARED=1: deleting a show from the share removes its %[inc]
+    monitor, so share-deletion is the single 'stop following' switch."""
+
+    ITEM = {"id": 42, "enabled": True, "cur_number": 5,
+            "search_string": "Silo S03E%[inc] 1080p",
+            "target": {"path": "S:\\dc\\series\\Silo.2023\\S03\\"}}
+    PRESENT = "/dc/series/Silo.2023/"
+
+    def _enable(self):
+        import os
+        os.environ["PRUNE_UNSHARED"] = "1"
+        self.addCleanup(os.environ.pop, "PRUNE_UNSHARED", None)
+
+    def test_prunes_when_folder_gone(self):
+        import season_monitor
+        self._enable()
+        c = _PruneClient(set(), [dict(self.ITEM)])   # folder not on share
+        self.assertEqual(season_monitor._prune_unshared(c, "S:\\dc", lambda m: None), 1)
+        self.assertIn(42, c.deleted)
+
+    def test_keeps_when_folder_present(self):
+        import season_monitor
+        self._enable()
+        c = _PruneClient({self.PRESENT}, [dict(self.ITEM)])
+        self.assertEqual(season_monitor._prune_unshared(c, "S:\\dc", lambda m: None), 0)
+        self.assertNotIn(42, c.deleted)
+
+    def test_keeps_when_never_grabbed(self):
+        import season_monitor
+        self._enable()
+        c = _PruneClient(set(), [dict(self.ITEM, cur_number=1)])   # cur==1
+        self.assertEqual(season_monitor._prune_unshared(c, "S:\\dc", lambda m: None), 0)
+
+    def test_keeps_when_downloading(self):
+        import season_monitor
+        self._enable()
+        c = _PruneClient(set(), [dict(self.ITEM)],
+                         bundles=[{"target": {"path": "S:\\dc\\series\\Silo.2023\\S03\\x\\"}}])
+        self.assertEqual(season_monitor._prune_unshared(c, "S:\\dc", lambda m: None), 0)
+
+    def test_off_by_default(self):
+        import season_monitor
+        c = _PruneClient(set(), [dict(self.ITEM)])
+        self.assertEqual(season_monitor._prune_unshared(c, "S:\\dc", lambda m: None), 0)
+        self.assertNotIn(42, c.deleted)
+
+
 class TestSeasonMonitorSecondary(unittest.TestCase):
     """Union of TMDB+TVmaze aired seasons, and the widened follow set that
     covers pack-grabbed shows with no %[inc] monitor."""

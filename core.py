@@ -39,6 +39,16 @@ BAD_SOURCE = " ".join(
                  for lead, trail in ((".", "."), (".", "-"), ("-", "-"))]
 )
 
+# A multi-volume RAR set surfaces each part (…-GROUP.r00 … .r99, …-GROUP.rar) as
+# its own file result. With file_type=any an AutoSearch grabs one 200 MB part
+# instead of the release folder. FulDC++ silently resets an item's directory-only
+# file_type back to "any" on its own save cycle, so this excluded-token list is
+# the durable backstop: a loose part's path contains ".r0".."r9"/".rar"; a
+# release DIRECTORY never does (small .nfo/.sfv/.jpg parts are already below the
+# size floor). Kept out of BAD_SOURCE so it doesn't trip the short-token guard.
+LOOSE_PART = " ".join([f".r{d}" for d in range(10)] + [".rar"])
+AUTOSEARCH_EXCLUDE = f"{BAD_SOURCE} {LOOSE_PART}"
+
 # One-shot AutoSearch items (a specific movie or season) stop searching after
 # this long. Without it an abandoned request searches the hubs forever. The
 # %[inc] episode monitor is deliberately exempt — an ongoing show has no end.
@@ -234,7 +244,7 @@ def hybrid_grab(client: FulDCClient, title: str, year: int | None, *,
         as_target = resolve_target("series", title, series, dc_root, None, None,
                                    movies_dir, series_dir, year)
     item = client.create_autosearch(matcher, target_directory=as_target,
-                                    excluded=BAD_SOURCE,
+                                    excluded=AUTOSEARCH_EXCLUDE,
                                     expire_days=AUTOSEARCH_TTL_DAYS,
                                     matcher_type=matcher_type,
                                     matcher_string=matcher_string,
@@ -303,7 +313,7 @@ def monitor_tv_season(client: FulDCClient, show: str, season: int, *,
     # parts as individual file results, and file_type=any would grab a single
     # 150 MB part instead of the folder.
     item = client.create_autosearch(matcher, target_directory=target,
-                                    excluded=BAD_SOURCE, remove_after_hit=False,
+                                    excluded=AUTOSEARCH_EXCLUDE, remove_after_hit=False,
                                     use_params=True, cur_number=first_episode,
                                     max_number=0, number_length=2,
                                     file_type="directory",

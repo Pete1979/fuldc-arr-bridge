@@ -20,7 +20,15 @@ Self-limiting: only seasons that (a) have aired, (b) are newer than the highest
 one already present/monitored, and (c) aired recently (within SEASON_RECENT_DAYS,
 default 540) are grabbed — so it never backfills old gaps, grabs a season before
 it airs, or pulls the whole tail of an ended show you're a few seasons behind on
-(that's what a Seerr request is for). Additive only; nothing is removed.
+(that's what a Seerr request is for). Additive by default.
+
+Two housekeeping passes run each sweep: it re-pins file_type=directory + the
+loose-part excludes on every %[inc] monitor (FulDC++ resets file_type on its own
+save cycle, which would otherwise let a lone RAR part get grabbed); and, when
+PRUNE_UNSHARED=1, it removes a monitor whose show folder has been deleted from
+the share (guarded: only if it had grabbed episodes and nothing is downloading
+into it) — so deleting a show from the share is the single 'stop following'
+switch.
 
 Needs a metadata source (TMDB_API_KEY or SEERR_URL+SEERR_API_KEY); a no-op
 without one.
@@ -41,7 +49,8 @@ from metadata import (aired_season_dates, aired_seasons, details, external_ids,
 from tvmaze import aired_season_dates as tvmaze_dates
 from tvmaze import aired_seasons as tvmaze_aired
 from ranker import scene_title
-from core import monitor_tv_season, resolve_target, safe_component
+from core import (AUTOSEARCH_EXCLUDE, LOOSE_PART, monitor_tv_season,
+                  resolve_target, safe_component)
 import library
 
 # capture the series root (series or kids.series), the show folder and season
@@ -286,6 +295,64 @@ def _process(client: FulDCClient, t: dict, occupied: list[str], dc_root: str,
     return added
 
 
+def _reassert_guards(client: FulDCClient, log) -> int:
+    """FulDC++ resets an AutoSearch's directory-only file_type back to "any" (0)
+    on its own save cycle (verified), which lets a lone RAR part get grabbed. Re-
+    pin file_type=directory AND the loose-part excludes on every enabled %[inc]
+    monitor each sweep — the excludes are the part that actually persists."""
+    fixed = 0
+    for it in client.list_autosearch():
+        if "%[inc]" not in (it.get("search_string") or "") or not it.get("enabled"):
+            continue
+        patch: dict = {}
+        if str(it.get("file_type")) not in ("directory", "7"):
+            patch["file_type"] = "directory"
+        exc = it.get("excluded_string") or ""
+        if ".r0" not in exc:
+            patch["excluded_string"] = f"{exc} {LOOSE_PART}".strip() if exc else AUTOSEARCH_EXCLUDE
+        if patch:
+            client.update_autosearch(it["id"], patch)
+            fixed += 1
+    if fixed:
+        log(f"# [season] re-pinned directory/loose-part guards on {fixed} monitor(s)")
+    return fixed
+
+
+def _downloading_into(client: FulDCClient, folder: str) -> bool:
+    """True if any bundle is queued/downloading into this show folder, so a
+    first grab that the share hasn't indexed yet is never pruned."""
+    seg = f"{folder}\\".lower()
+    try:
+        bundles = client.list_bundles(0, 400)
+    except Exception:  # noqa: BLE001 - can't tell -> keep the monitor
+        return True
+    return any(seg in (_target_path(b) or "").lower() for b in bundles)
+
+
+def _prune_unshared(client: FulDCClient, dc_root: str, log) -> int:
+    """Opt-in (PRUNE_UNSHARED=1): make deleting a show from the share the single
+    off-switch for following it. Remove a %[inc] monitor once its show folder is
+    gone from the share. Guards: only if it has grabbed at least one episode
+    (cur>1 = content existed) and nothing is downloading into it right now."""
+    if os.environ.get("PRUNE_UNSHARED", "0").strip().lower() not in ("1", "true", "yes"):
+        return 0
+    removed = 0
+    for it in client.list_autosearch():
+        ss = it.get("search_string") or ""
+        if "%[inc]" not in ss:
+            continue
+        m = _TARGET.search(_target_path(it) or "")
+        if not m or (it.get("cur_number") or 1) <= 1:
+            continue
+        adc = _adc(f"{m.group('root')}\\{m.group('folder')}\\")
+        if _folder_present(client, adc) or _downloading_into(client, m.group("folder")):
+            continue
+        if client.delete_autosearch(it["id"]):
+            log(f"# [season] UNFOLLOW: {m.group('folder')} gone from share -> removed {ss!r}")
+            removed += 1
+    return removed
+
+
 def sweep(client: FulDCClient, *, dc_root: str = "S:\\dc",
           movies_dir: str | None = None, log=print) -> int:
     """Add a %[inc] monitor for every newly-aired season beyond the highest one
@@ -298,6 +365,8 @@ def sweep(client: FulDCClient, *, dc_root: str = "S:\\dc",
             added += _process(client, t, occupied, dc_root, movies_dir, log)
         except Exception as e:  # noqa: BLE001 - one bad show must not stop the sweep
             log(f"# [season] error on {t.get('folder')!r}: {e}")
+    _reassert_guards(client, log)
+    pruned = _prune_unshared(client, dc_root, log)
     log(f"# [season] sweep done: {added} new-season monitor(s) across "
-        f"{len(targets)} shows")
+        f"{len(targets)} shows; pruned {pruned}")
     return added
