@@ -24,11 +24,16 @@ it airs, or pulls the whole tail of an ended show you're a few seasons behind on
 
 Two housekeeping passes run each sweep: it re-pins file_type=directory + the
 loose-part excludes on every %[inc] monitor (FulDC++ resets file_type on its own
-save cycle, which would otherwise let a lone RAR part get grabbed); and, when
-PRUNE_UNSHARED=1, it removes a monitor whose show folder has been deleted from
-the share (guarded: only if it had grabbed episodes and nothing is downloading
-into it) — so deleting a show from the share is the single 'stop following'
-switch.
+save cycle, which would otherwise let a lone RAR part get grabbed); it retires a
+season-N monitor once a later season of the same show exists (a finished season
+never gets new episodes); and, when PRUNE_UNSHARED=1, it removes a monitor whose
+show folder has been deleted from the share (guarded: only if it had grabbed
+episodes and nothing is downloading into it) — so deleting a show from the share
+is the single 'stop following' switch.
+
+When a new season is first followed, its already-aired episodes are grabbed in
+one pass (not trickled one per %[inc] search cycle), then the monitor is pointed
+at the first still-missing episode.
 
 Needs a metadata source (TMDB_API_KEY or SEERR_URL+SEERR_API_KEY); a no-op
 without one.
@@ -48,9 +53,10 @@ from metadata import (aired_season_dates, aired_seasons, details, external_ids,
                       year_of)
 from tvmaze import aired_season_dates as tvmaze_dates
 from tvmaze import aired_seasons as tvmaze_aired
+from tvmaze import aired_episodes as tvmaze_episodes
 from ranker import scene_title
-from core import (AUTOSEARCH_EXCLUDE, LOOSE_PART, monitor_tv_season,
-                  resolve_target, safe_component)
+from core import (AUTOSEARCH_EXCLUDE, LOOSE_PART, backfill_episodes,
+                  monitor_tv_season, resolve_target, safe_component)
 import library
 
 # capture the series root (series or kids.series), the show folder and season
@@ -71,6 +77,18 @@ def _recent_days() -> int:
         return max(1, int(os.environ.get("SEASON_RECENT_DAYS", "540")))
     except ValueError:
         return 540
+
+
+def _first_missing(aired_eps, present) -> int:
+    """Where to start the %[inc] monitor after a backfill: the first aired
+    episode not yet present (so a not-yet-released latest episode is still
+    watched), or one past the last aired episode if the season is complete."""
+    if not aired_eps:
+        return 1
+    for e in sorted(aired_eps):
+        if e not in present:
+            return e
+    return max(aired_eps) + 1
 
 
 def _adc(win_path: str) -> str:
@@ -285,14 +303,47 @@ def _process(client: FulDCClient, t: dict, occupied: list[str], dc_root: str,
             log(f"# [season] skip {t['query']} S{s:02d} (aired {premiere}, "
                 f"older than {_recent_days()}d) — backfill, request via Seerr")
             continue
+        # Grab every already-aired episode now (a new season is often several
+        # episodes deep), then point the %[inc] monitor at the first one still
+        # missing so it only watches for what's left / future episodes.
+        eps = tvmaze_episodes(imdb_id=imdb, tvdb_id=tvdb, season=s, log=log)
+        present = backfill_episodes(client, t["show"], s, eps, dc_root=dc_root,
+                                    movies_dir=movies_dir, series_dir=t["series_dir"],
+                                    year=t["year"], quality=t["quality"], log=log) if eps else set()
         res = monitor_tv_season(client, t["show"], s, year=t["year"],
                                 dc_root=dc_root, movies_dir=movies_dir,
                                 series_dir=t["series_dir"], quality=t["quality"],
-                                log=log)
+                                first_episode=_first_missing(eps, present), log=log)
         _notify(t["query"], s, res, log)
-        log(f"# [season] NEW: {t['query']} S{s:02d} -> monitor")
+        log(f"# [season] NEW: {t['query']} S{s:02d} -> monitor "
+            f"(backfilled {len(present)}/{len(eps)} aired eps)")
         added += 1
     return added
+
+
+def _retire_finished(client: FulDCClient, log) -> int:
+    """Retire a season-N %[inc] monitor once a later season of the same show
+    exists (monitored or on the share): a show never adds episodes to an older
+    season, so the monitor is dead weight sitting past the last episode. The
+    latest season's monitor is always kept (nothing later exists yet)."""
+    by_show: dict[tuple[str, str], dict[int, dict]] = {}
+    for it in client.list_autosearch():
+        if "%[inc]" not in (it.get("search_string") or ""):
+            continue
+        m = _TARGET.search(_target_path(it) or "")
+        if m:
+            by_show.setdefault((m.group("root"), m.group("folder")), {})[int(m.group("season"))] = it
+    retired = 0
+    for (root, folder), seasons in by_show.items():
+        for n, it in seasons.items():
+            later = any(x > n for x in seasons)
+            if not later:
+                later = bool(client.find_dupe_paths(_adc(f"{root}\\{folder}\\S{n + 1:02d}\\")))
+            if later and client.delete_autosearch(it["id"]):
+                log(f"# [season] RETIRE {folder} S{n:02d}: a later season exists "
+                    f"-> removed finished-season monitor")
+                retired += 1
+    return retired
 
 
 def _reassert_guards(client: FulDCClient, log) -> int:
@@ -366,7 +417,8 @@ def sweep(client: FulDCClient, *, dc_root: str = "S:\\dc",
         except Exception as e:  # noqa: BLE001 - one bad show must not stop the sweep
             log(f"# [season] error on {t.get('folder')!r}: {e}")
     _reassert_guards(client, log)
+    retired = _retire_finished(client, log)
     pruned = _prune_unshared(client, dc_root, log)
     log(f"# [season] sweep done: {added} new-season monitor(s) across "
-        f"{len(targets)} shows; pruned {pruned}")
+        f"{len(targets)} shows; retired {retired}; pruned {pruned}")
     return added

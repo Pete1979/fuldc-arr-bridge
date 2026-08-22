@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from contextlib import contextmanager
 
-from fuldc_client import PRIO_HIGH, FulDCClient
+from fuldc_client import PRIO_HIGH, PRIO_LOW, FulDCClient
 from ranker import (Prefs, rank, search_queries, strip_leading_article,
                     scene_title, scene_search, matches_season, SEASON_EP_RE)
 
@@ -321,3 +321,53 @@ def monitor_tv_season(client: FulDCClient, show: str, season: int, *,
     log(f"# monitor {matcher!r} (from E{first_episode:02d}) -> {target}")
     return {"mode": "monitor", "matcher": matcher,
             "autosearch_id": item.get("id"), "target": target, "season": season}
+
+
+def _is_owned(result: dict) -> bool:
+    """The result is already on the share or in the download queue (search-result
+    `dupe` flag), so it must not be re-grabbed."""
+    return str(((result.get("dupe") or {}).get("id")) or "").startswith(("share", "queue"))
+
+
+def backfill_episodes(client: FulDCClient, show: str, season: int,
+                      episodes, *, dc_root: str = "S:\\dc",
+                      movies_dir: str | None = None, series_dir: str | None = None,
+                      year: int | None = None, quality: str | None = None,
+                      prefs: Prefs | None = None, wait: float = 8.0,
+                      log=print) -> set[int]:
+    """Grab every already-aired episode of a season as a directory in one pass —
+    so a newly-followed season whose episodes are already out downloads now
+    instead of the %[inc] monitor trickling one per search cycle. Skips an
+    episode already on the share/queue (dupe flag). Returns the episode numbers
+    now present (grabbed or already owned)."""
+    prefs = prefs or Prefs()
+    season_target = resolve_target("series", show, None, dc_root, None, season,
+                                   movies_dir, series_dir, year)
+    base = scene_search(strip_leading_article(show))
+    q = f" {quality}" if quality else ""
+    present: set[int] = set()
+    for ep in sorted(set(episodes)):
+        iid, results = client.search(f"{base} S{season:02d}E{ep:02d}{q}",
+                                     wait=wait, priority=PRIO_LOW)
+        try:
+            # already on the share / in the queue (any release of this episode)
+            if any(_is_owned(r) for r in results):
+                present.add(ep)
+                continue
+            cands = [c for c in rank(results, show, None, prefs, kind="series")
+                     if matches_season(c.release, season)
+                     and (c.result.get("type") or {}).get("id") == "directory"]
+            if not cands:
+                log(f"# [backfill] {show} S{season:02d}E{ep:02d}: no directory result")
+                continue
+            best = cands[0]
+            dl_target, dl_name = _download_placement(
+                "series", show, None, dc_root, season, movies_dir, series_dir,
+                year, best.release, season_target)
+            client.download_result(iid, best.result["id"], dl_target, name=dl_name)
+            log(f"# [backfill] {show} S{season:02d}E{ep:02d} -> {best.release}")
+            present.add(ep)
+        finally:
+            if iid is not None:
+                client.close(iid)
+    return present

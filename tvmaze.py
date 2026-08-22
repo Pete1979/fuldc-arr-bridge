@@ -108,3 +108,26 @@ def aired_season_dates(imdb_id: str | None = None, tvdb_id: int | None = None,
         if n > 0 and premiere and premiere <= today:
             out[int(n)] = premiere
     return out
+
+
+def aired_episodes(imdb_id: str | None = None, tvdb_id: int | None = None,
+                   name: str | None = None, season: int | None = None,
+                   *, log=print) -> list[int]:
+    """Episode numbers of a given season whose air date is on/before today, so a
+    newly-followed season can be backfilled in one pass instead of the %[inc]
+    monitor trickling one episode per search cycle."""
+    sid = _show_id(imdb_id, tvdb_id, name, log=log)
+    if sid is None:
+        return []
+    eps = _get_json(f"{TVMAZE_BASE}/shows/{sid}/episodes", log=log)
+    if not isinstance(eps, list):
+        return []
+    today = datetime.date.today().isoformat()
+    out: list[int] = []
+    for e in eps:
+        if e.get("season") != season:
+            continue
+        n, air = e.get("number"), (e.get("airdate") or "")[:10]
+        if n and air and air <= today:
+            out.append(int(n))
+    return sorted(out)

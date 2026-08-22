@@ -1242,6 +1242,110 @@ class TestPruneUnshared(unittest.TestCase):
         self.assertNotIn(42, c.deleted)
 
 
+class _BackfillClient(FakeClient):
+    """Scripts per-episode search results and records downloads."""
+
+    def __init__(self, per_ep):
+        super().__init__()
+        self.per_ep = per_ep          # {episode_number: [result dicts]}
+        self.downloads = []
+
+    def search(self, pattern, wait=10.0, poll=1.0, plateau=3.0, priority=0):
+        import re
+        m = re.search(r"E(\d{2})", pattern)
+        return 999, self.per_ep.get(int(m.group(1)) if m else 0, [])
+
+    def close(self, instance_id):
+        pass
+
+    def download_result(self, instance_id, result_id, target_directory=None, name=None):
+        self.downloads.append((result_id, target_directory, name))
+        return {"bundle_id": 1}
+
+
+def _dirres(name, owned=False, size=2 * 1024**3):
+    r = {"id": name, "name": name, "path": f"/tv/{name}/", "size": size,
+         "users": {"count": 5}, "type": {"id": "directory", "files": 10}}
+    if owned:
+        r["dupe"] = {"id": "share_full", "paths": ["S:\\x\\"]}
+    return r
+
+
+class TestBackfillEpisodes(unittest.TestCase):
+    """A newly-followed season's already-aired episodes are grabbed in one pass,
+    skipping any already on the share (dupe flag) or with no directory result."""
+
+    def test_grabs_missing_skips_owned_and_gaps(self):
+        c = _BackfillClient({
+            2: [_dirres("South.Park.S27E02.1080p.WEB.h264-EDITH")],
+            3: [_dirres("South.Park.S27E03.1080p.WEB.h264-ETHEL", owned=True)],
+            4: [],   # no release available yet
+        })
+        present = core.backfill_episodes(c, "South Park", 27, [2, 3, 4],
+                                         quality="1080p", log=lambda m: None)
+        self.assertEqual(present, {2, 3})              # 4 is a gap
+        self.assertEqual(len(c.downloads), 1)          # only E02 downloaded (E03 owned)
+        self.assertIn("S27E02", c.downloads[0][2])     # the release name
+
+    def test_rejects_loose_part_and_wrong_season(self):
+        c = _BackfillClient({
+            2: [{"id": "p", "name": "south.park.s27e02.1080p.web.h264-edith.r04",
+                 "path": "/tv/x/south.park.s27e02.1080p.web.h264-edith.r04",
+                 "size": 3 * 1024**3, "users": {"count": 5},
+                 "type": {"id": "file", "str": "r04"}},
+                _dirres("South.Park.S26E02.1080p.WEB.h264-EDITH")]})   # wrong season
+        present = core.backfill_episodes(c, "South Park", 27, [2], log=lambda m: None)
+        self.assertEqual(present, set())               # nothing valid for S27E02
+        self.assertEqual(c.downloads, [])
+
+
+class TestFirstMissing(unittest.TestCase):
+    def test_all_present_watches_next(self):
+        import season_monitor
+        self.assertEqual(season_monitor._first_missing([1, 2, 3], {1, 2, 3}), 4)
+
+    def test_trailing_gap_watches_it(self):
+        import season_monitor
+        self.assertEqual(season_monitor._first_missing([1, 2, 3], {1, 2}), 3)
+
+    def test_interior_gap(self):
+        import season_monitor
+        self.assertEqual(season_monitor._first_missing([1, 2, 3, 4], {1, 2, 4}), 3)
+
+    def test_empty(self):
+        import season_monitor
+        self.assertEqual(season_monitor._first_missing([], set()), 1)
+
+
+class TestRetireFinished(unittest.TestCase):
+    """Retire a season-N monitor once a later season exists (a show never adds
+    episodes to an old season); always keep the latest season's monitor."""
+
+    def _mon(self, mid, folder, season):
+        return {"id": mid, "enabled": True,
+                "search_string": f"{folder} S{season:02d}E%[inc] 1080p",
+                "target": {"path": f"S:\\dc\\series\\{folder}\\S{season:02d}\\"}}
+
+    def test_retires_old_keeps_latest(self):
+        import season_monitor
+        c = _PruneClient(set(), [self._mon(1, "South.Park.1997", 27),
+                                 self._mon(2, "South.Park.1997", 28)])
+        self.assertEqual(season_monitor._retire_finished(c, lambda m: None), 1)
+        self.assertIn(1, c.deleted)          # S27 retired
+        self.assertNotIn(2, c.deleted)       # S28 (latest) kept
+
+    def test_keeps_when_latest_only(self):
+        import season_monitor
+        c = _PruneClient(set(), [self._mon(1, "Silo.2023", 3)])
+        self.assertEqual(season_monitor._retire_finished(c, lambda m: None), 0)
+
+    def test_retires_when_next_season_present_on_share(self):
+        import season_monitor
+        c = _PruneClient({"/dc/series/Silo.2023/S04/"}, [self._mon(1, "Silo.2023", 3)])
+        self.assertEqual(season_monitor._retire_finished(c, lambda m: None), 1)
+        self.assertIn(1, c.deleted)
+
+
 class TestSeasonMonitorSecondary(unittest.TestCase):
     """Union of TMDB+TVmaze aired seasons, and the widened follow set that
     covers pack-grabbed shows with no %[inc] monitor."""
@@ -1262,6 +1366,7 @@ class TestSeasonMonitorSecondary(unittest.TestCase):
                     aired_seasons=lambda tid, log=print: {1},          # TMDB blind to S2
                     external_ids=lambda tid, log=print: ("tt1", 458912),
                     tvmaze_aired=lambda **k: {1, 2},                   # TVmaze knows S2
+                    tvmaze_episodes=lambda **k: [],
                     seerr_tv_requests=lambda log=print: [])
         self.assertEqual(season_monitor.sweep(c, log=lambda m: None), 1)
         self.assertIn("Alien.Earth S02E%[inc]",
@@ -1276,7 +1381,8 @@ class TestSeasonMonitorSecondary(unittest.TestCase):
                         "name": "Alien: Earth", "firstAirDate": "2025-08-12", "genres": []},
                     external_ids=lambda tid, log=print: (None, 458912),
                     aired_seasons=lambda tid, log=print: {1},
-                    tvmaze_aired=lambda **k: {1, 2})
+                    tvmaze_aired=lambda **k: {1, 2},
+                    tvmaze_episodes=lambda **k: [])
         self.assertEqual(season_monitor.sweep(c, log=lambda m: None), 1)
         body = c.body_for("POST", "/auto_search/items")
         self.assertIn("Alien.Earth S02E%[inc]", body["search_string"])
@@ -1373,7 +1479,8 @@ class TestSeasonMonitorLibrary(unittest.TestCase):
         self._patch(seerr_tv_requests=lambda log=print: [],
                     external_ids=lambda tid, log=print: (None, 222),
                     aired_seasons=lambda tid, log=print: {1},
-                    tvmaze_aired=lambda **k: {1, 2})
+                    tvmaze_aired=lambda **k: {1, 2},
+                    tvmaze_episodes=lambda **k: [])
         self.assertEqual(season_monitor.sweep(c, log=lambda m: None), 1)
         body = c.body_for("POST", "/auto_search/items")
         self.assertIn("Murderbot S02E%[inc]", body["search_string"])
