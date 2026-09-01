@@ -128,6 +128,19 @@ def add(client: FulDCClient, urls: list[str], category: str) -> None:
                 # threads re-acquire and queue two bundles for one release.
                 print(f"[qbit] add: {h[:12]} already tracked — ignoring", flush=True)
                 continue
+
+            # The claim is taken HERE, under the same lock that just did the check.
+            #
+            # Checking and then dropping the lock left a multi-second window -- _reacquire below
+            # runs a hub search -- during which a second thread saw nothing tracked and started its
+            # own add. The guard therefore did not prevent the double queueing it exists for; it
+            # only narrowed the window. Every path below ends in a _track that replaces this
+            # placeholder, and it is marked failed meanwhile so that an exception on the way there
+            # leaves Radarr a terminal state rather than a torrent stuck at 0%.
+            _torrents[h] = {"name": h[:12], "category": category or "", "size": 0,
+                            "save_path": "", "added_on": int(time.time()),
+                            "bundle_id": None, "failed": True}
+
         info = store.get(h)
         if not info:
             # store is in-memory, so a restart loses the mapping. Surface it as

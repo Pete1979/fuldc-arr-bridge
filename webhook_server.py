@@ -21,7 +21,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from fuldc_client import FulDCClient
-from httputil import body_too_large, read_body, secure_equal
+from httputil import REQUEST_TIMEOUT_SECONDS, body_too_large, read_body, secure_equal
 from ranker import Prefs
 from core import grab_tv_season, hybrid_grab
 from metadata import classify
@@ -227,6 +227,11 @@ def _fuldc_reachable() -> tuple[bool, str]:
 
 
 class Handler(BaseHTTPRequestHandler):
+    # See httputil.REQUEST_TIMEOUT_SECONDS: without this a caller can announce a body and never
+    # send it, holding a request thread for as long as it likes. With WEBHOOK_TOKEN unset there is
+    # nothing to authenticate against first, so any caller that can reach the port can do it.
+    timeout = REQUEST_TIMEOUT_SECONDS
+
     def _send(self, code: int, body: bytes = b"ok") -> None:
         self.send_response(code)
         self.send_header("Content-Type", "text/plain")

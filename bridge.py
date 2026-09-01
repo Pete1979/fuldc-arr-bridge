@@ -85,8 +85,13 @@ def do_grab(a) -> None:
     movies_dir = os.environ.get("MOVIES_DIR")
     series_dir = os.environ.get("SERIES_DIR")
     season = getattr(a, "season", None)
+    # a.year is passed. Without it this call left year=None, so the CLI built the series folder
+    # without the year that resolve_target appends (Show.Name rather than Show.Name.2025), while
+    # the webhook path -- which goes through hybrid_grab and does pass it -- built one with. The
+    # same show grabbed from the two front ends landed in two different directories, and --year
+    # did nothing to change that.
     target = resolve_target(a.kind, a.title, a.series, dc_root, a.target,
-                            season, movies_dir, series_dir)
+                            season, movies_dir, series_dir, a.year)
     if not a.grab:
         with searched(c, a.title, a.year, wait=a.wait,
                       kind=a.kind, season=season) as (iid, results):
