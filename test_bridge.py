@@ -25,6 +25,7 @@ os.environ.setdefault("FULDC_PASS", "test")
 import core
 import fuldc_client
 import httputil
+import metadata
 import qbit
 import ranker
 import store
@@ -242,6 +243,32 @@ class TestSceneTitle(unittest.TestCase):
         self.assertEqual(ranker.scene_title("Spider-Man: Brand New Day"),
                          "Spider-Man.Brand.New.Day")
 
+    def test_ampersand_becomes_and(self):
+        # scene releases spell '&' as 'and' (Minions & Monsters -> Minions.and.Monsters)
+        self.assertEqual(ranker.scene_title("Minions & Monsters"),
+                         "Minions.and.Monsters")
+        self.assertEqual(ranker.scene_title("Tom & Jerry"), "Tom.and.Jerry")
+        # and the ranker scores the 'and' release as a full title match
+        self.assertEqual(ranker.normalize("Minions & Monsters"),
+                         ranker.normalize("Minions.and.Monsters"))
+
+    def test_scene_search_folds_diacritics(self):
+        # DC transliterates accents; the search string must too or the hub's
+        # AND-match returns nothing (Lotta på Bråkmakargatan -> ...Pa.Brakmakargatan)
+        self.assertEqual(ranker.scene_search("Lotta på Bråkmakargatan"),
+                         "Lotta.pa.Brakmakargatan")
+        self.assertEqual(ranker.search_queries("Lotta på Bråkmakargatan", 1992),
+                         ["Lotta.pa.Brakmakargatan 1992", "Lotta.pa.Brakmakargatan"])
+
+    def test_separator_hyphen_dropped_intraword_kept(self):
+        # ' - ' is a scene title separator (collapses to a dot); an intra-word
+        # hyphen (Spider-Man) stays. DC has Lotta.2.Lotta.Flyttar.Hemifran, not
+        # Lotta.2.-.Lotta... — a bare '-' token would AND-match nothing.
+        self.assertEqual(ranker.scene_search("Lotta 2 - Lotta flyttar hemifrån"),
+                         "Lotta.2.Lotta.flyttar.hemifran")
+        self.assertEqual(ranker.scene_title("Spider-Man: Brand New Day"),
+                         "Spider-Man.Brand.New.Day")
+
     def test_monitor_matcher_has_no_punctuation(self):
         c = FakeClient()
         core.monitor_tv_season(c, "Lord of the Rings: The Rings of Power", 3,
@@ -249,6 +276,127 @@ class TestSceneTitle(unittest.TestCase):
         ss = c.body_for("POST", "/auto_search/items")["search_string"]
         self.assertNotIn(":", ss)
         self.assertIn("Rings.of.Power", ss)
+
+    def test_monitor_matches_directories_only(self):
+        # a RAR set also surfaces loose .rNN file results; file_type=any grabs a
+        # single part instead of the release folder
+        c = FakeClient()
+        core.monitor_tv_season(c, "Lanterns", 1, log=lambda m: None)
+        body = c.body_for("POST", "/auto_search/items")
+        self.assertEqual(body.get("file_type"), "directory")
+
+
+class TestOriginalTitle(unittest.TestCase):
+    """Seerr sends the translated display title, but DC scene releases of a
+    foreign film use its original-language title (Lotta on Rascal Street ->
+    Lotta på Bråkmakargatan)."""
+
+    def test_foreign_movie_returns_original(self):
+        d = {"original_language": "sv",
+             "original_title": "Lotta på Bråkmakargatan",
+             "title": "Lotta on Rascal Street"}
+        self.assertEqual(metadata._original_title(d), "Lotta på Bråkmakargatan")
+
+    def test_english_returns_none(self):
+        self.assertIsNone(metadata._original_title(
+            {"original_language": "en", "original_title": "Whatever"}))
+
+    def test_seerr_camelcase_tv(self):
+        d = {"originalLanguage": "sv", "originalName": "Svenska Serien"}
+        self.assertEqual(metadata._original_title(d), "Svenska Serien")
+
+
+class TestSeasonPackPlacement(unittest.TestCase):
+    """A season pack is a directory of episode folders; it must land AS the
+    S<NN> folder, not nested series\\Show\\S<NN>\\<pack>\\<episodes>."""
+
+    def _show(self):
+        return core.resolve_target("series", "Norsemen", None, r"S:\dc",
+                                   None, None, None, None, 2016)
+
+    def _season(self):
+        return core.resolve_target("series", "Norsemen", None, r"S:\dc",
+                                   None, 2, None, None, 2016)
+
+    def test_pack_contents_go_into_season_folder(self):
+        tgt, name = core._download_placement(
+            "series", "Norsemen", None, r"S:\dc", 2, None, None, 2016,
+            "Norsemen.S02.iNTERNAL.1080p.WEB.X264-EDHD", self._season())
+        self.assertEqual(tgt, self._show())
+        self.assertEqual(name, "S02")
+
+    def test_single_episode_keeps_release_folder(self):
+        season = self._season()
+        tgt, name = core._download_placement(
+            "series", "Norsemen", None, r"S:\dc", 2, None, None, 2016,
+            "Norsemen.S02E03.iNTERNAL.1080p.WEB.X264-EDHD", season)
+        self.assertEqual(tgt, season)
+        self.assertEqual(name, "Norsemen.S02E03.iNTERNAL.1080p.WEB.X264-EDHD")
+
+    def test_movie_unchanged(self):
+        tgt, name = core._download_placement(
+            "movie", "Dune", None, r"S:\dc", None, None, None, 2021,
+            "Dune.2021.1080p.WEB", r"S:\dc\movies" + "\\")
+        self.assertEqual((tgt, name), (r"S:\dc\movies" + "\\", "Dune.2021.1080p.WEB"))
+
+
+class TestCompleteFallback(unittest.TestCase):
+    """A single-season ended show (esp. anime) is often shared as one COMPLETE
+    pack or absolute-numbered episodes with no S<NN> token, so the season grab
+    widens its search when the show has exactly one season."""
+
+    def test_single_season_adds_complete_and_bare_queries(self):
+        qs = core._queries("Fullmetal Alchemist Brotherhood", 2009, "series", 1,
+                           complete=True)
+        self.assertEqual(qs, [
+            "Fullmetal.Alchemist.Brotherhood S01",
+            "Fullmetal.Alchemist.Brotherhood S1",
+            "Fullmetal.Alchemist.Brotherhood COMPLETE",
+            "Fullmetal.Alchemist.Brotherhood",
+        ])
+
+    def test_default_keeps_only_season_queries(self):
+        qs = core._queries("Fullmetal Alchemist Brotherhood", 2009, "series", 1)
+        self.assertEqual(qs, ["Fullmetal.Alchemist.Brotherhood S01",
+                              "Fullmetal.Alchemist.Brotherhood S1"])
+
+    def test_request_meta_returns_season_count(self):
+        import metadata
+        orig = metadata._details
+        metadata._details = lambda *a, **k: {
+            "genres": [], "status": "Ended",
+            "number_of_seasons": 1, "original_language": "en"}
+        try:
+            self.assertEqual(metadata.request_meta(123, "tv"),
+                             (False, True, None, 1))
+        finally:
+            metadata._details = orig
+
+
+class TestQualityPreference(unittest.TestCase):
+    """QUALITY is a preference, not a hard filter: grab 1080p when it exists,
+    but don't exclude unlabeled/other-quality releases when no 1080p is shared
+    (anime/complete packs often carry no quality tag)."""
+
+    def _res(self, path):
+        return {"path": path, "type": {"id": "directory"},
+                "size": 3_000_000_000, "users": {"count": 5}}
+
+    def test_prefers_1080p_and_drops_720p_when_1080p_exists(self):
+        prefs = ranker.Prefs(require_quality=["1080p"])
+        cands = ranker.rank(
+            [self._res("/x/Show.S02.720p.BluRay-A"),
+             self._res("/x/Show.S02.1080p.BluRay-B")],
+            "Show", None, prefs, kind="series")
+        self.assertEqual(len(cands), 1)
+        self.assertIn("1080p", cands[0].release.lower())
+
+    def test_keeps_unlabeled_pack_when_no_1080p(self):
+        prefs = ranker.Prefs(require_quality=["1080p"])
+        cands = ranker.rank(
+            [self._res("/Anime/Show.S02.Stardust.Crusaders")],
+            "Show", None, prefs, kind="series")
+        self.assertEqual(len(cands), 1)  # unlabeled pack NOT filtered out
 
 
 class TestYearFolder(unittest.TestCase):
@@ -628,12 +776,15 @@ class TestRankerQuality(unittest.TestCase):
         self.assertTrue(ranker._token_in("up", "pixar up 2009 1080p"))
         self.assertFalse(ranker._token_in("up", "superman 2025 1080p"))
 
-    def test_hub_root_folder_cannot_satisfy_required_quality(self):
-        """Matching the whole path let a hub root named /1080p-Releases/ pass
-        require_quality for a 480p release."""
-        res = [self._res("/1080p-Releases/Dune.2021.DVDRip/480p/")]
-        self.assertEqual(
-            ranker.rank(res, "Dune", 2021, ranker.Prefs(require_quality=["1080p"])), [])
+    def test_hub_root_folder_does_not_count_as_real_quality(self):
+        """A hub root named /1080p-Releases/ must not make a 480p release count
+        as 1080p: when a real 1080p exists, the DVDRip is dropped for it
+        (quality is now a preference, so a lone DVDRip would still be kept)."""
+        res = [self._res("/1080p-Releases/Dune.2021.DVDRip/480p/"),
+               self._res("/x/Dune.2021.BluRay/1080p/")]
+        cands = ranker.rank(res, "Dune", 2021, ranker.Prefs(require_quality=["1080p"]))
+        self.assertEqual(len(cands), 1)
+        self.assertIn("bluray", cands[0].release.lower())
 
     def test_real_quality_subfolder_still_passes(self):
         res = [self._res("/1080p-Releases/Dune.2021.BluRay/1080p/")]
@@ -852,6 +1003,526 @@ class TestSeasonMonitor(unittest.TestCase):
         season_monitor.sweep(c, log=lambda m: None)
         self.assertEqual(c.body_for("POST", "/auto_search/items")["target"],
                          "S:\\dc\\kids.series\\VeggieTales.2014\\S02\\")
+
+
+class TestSeasonRecency(unittest.TestCase):
+    """A new season is auto-grabbed only if it aired recently. Older aired
+    seasons of a show you're merely behind on are backfill (request via Seerr),
+    not a new drop — so an ended show doesn't get its whole tail pulled in."""
+
+    def _client(self, search_string, target):
+        return FakeClient({("GET", "/auto_search/items"):
+                           (200, [{"id": 1, "search_string": search_string,
+                                   "target": {"path": target}}])})
+
+    def _stub(self, dates):
+        import season_monitor
+        for name, val in (("find_tv_id", lambda name, log=print: 42),
+                          ("aired_seasons", lambda tid, log=print: set(dates)),
+                          ("tvmaze_aired", lambda **k: set()),
+                          ("external_ids", lambda tid, log=print: (None, None)),
+                          ("aired_season_dates", lambda tid, log=print: dates),
+                          ("tvmaze_dates", lambda **k: {})):
+            self.addCleanup(setattr, season_monitor, name,
+                            getattr(season_monitor, name))
+            setattr(season_monitor, name, val)
+
+    def test_old_seasons_not_backfilled(self):
+        import season_monitor
+        c = self._client("Curious.George S06E%[inc] 1080",
+                         "S:\\dc\\kids.series\\Curious.George.2006\\S06\\")
+        old = "2015-01-01"
+        self._stub({6: old, 7: old, 8: old, 9: old})
+        # user has S06; TVmaze lists through S09 but all aired a decade ago
+        self.assertEqual(season_monitor.sweep(c, log=lambda m: None), 0)
+
+    def test_recent_new_season_grabbed(self):
+        import datetime
+        import season_monitor
+        c = self._client("The.Boys S04E%[inc] 1080",
+                         "S:\\dc\\series\\The.Boys.2019\\S04\\")
+        recent = (datetime.date.today() - datetime.timedelta(days=10)).isoformat()
+        self._stub({4: "2022-01-01", 5: recent})
+        self.assertEqual(season_monitor.sweep(c, log=lambda m: None), 1)
+        self.assertIn("The.Boys S05E%[inc]",
+                      c.body_for("POST", "/auto_search/items")["search_string"])
+
+    def test_undated_season_still_grabbed(self):
+        import season_monitor
+        c = self._client("Foo S01E%[inc] 1080",
+                         "S:\\dc\\series\\Foo.2020\\S01\\")
+        # aired set has S02 but no date is known for it -> fall back to grabbing
+        self._stub({1: "2020-01-01"})
+        season_monitor.aired_seasons = lambda tid, log=print: {1, 2}
+        self.assertEqual(season_monitor.sweep(c, log=lambda m: None), 1)
+
+
+class TestTVmaze(unittest.TestCase):
+    """Keyless secondary season source. TMDB lags on continuing shows; TVmaze
+    already lists the new (undated) season."""
+
+    def _stub(self, get_json):
+        import tvmaze
+        orig = tvmaze._get_json
+        self.addCleanup(setattr, tvmaze, "_get_json", orig)
+        tvmaze._get_json = get_json
+
+    def test_undated_season_excluded(self):
+        import tvmaze
+        self._stub(lambda url, log=print: ({"id": 55} if "lookup" in url else
+                   [{"number": 1, "premiereDate": "2025-08-12"},
+                    {"number": 2, "premiereDate": None}]))
+        # S2 exists but hasn't aired -> not grabbed yet (the Alien: Earth case)
+        self.assertEqual(tvmaze.aired_seasons(tvdb_id=458912), {1})
+
+    def test_future_season_excluded(self):
+        import tvmaze
+        self._stub(lambda url, log=print: ({"id": 5} if "lookup" in url else
+                   [{"number": 1, "premiereDate": "2025-01-01"},
+                    {"number": 2, "premiereDate": "2099-01-01"}]))
+        self.assertEqual(tvmaze.aired_seasons(tvdb_id=1), {1})
+
+    def test_no_external_id_makes_no_call(self):
+        import tvmaze
+        seen = []
+        self._stub(lambda *a, **k: seen.append(1))
+        # without a TheTVDB/IMDb id we never do a fuzzy name lookup
+        self.assertEqual(tvmaze.aired_seasons(), set())
+        self.assertEqual(seen, [])
+
+
+class TestMetadataSecondary(unittest.TestCase):
+    def _patch(self, name, value):
+        orig = getattr(metadata, name)
+        self.addCleanup(setattr, metadata, name, orig)
+        setattr(metadata, name, value)
+
+    def test_external_ids_from_seerr_details(self):
+        self._patch("_details", lambda *a, **k: {
+            "externalIds": {"imdbId": "tt13623632", "tvdbId": 458912}})
+        self.assertEqual(metadata.external_ids(157239), ("tt13623632", 458912))
+
+    def test_seerr_tv_requests_filters_and_dedupes(self):
+        self.addCleanup(os.environ.pop, "SEERR_URL", None)
+        self.addCleanup(os.environ.pop, "SEERR_API_KEY", None)
+        os.environ["SEERR_URL"] = "http://seerr"
+        os.environ["SEERR_API_KEY"] = "k"
+        page = {"results": [{"media": {"mediaType": "tv", "tmdbId": 10}},
+                            {"media": {"mediaType": "movie", "tmdbId": 20}},
+                            {"media": {"mediaType": "tv", "tmdbId": 10}}]}
+        self._patch("_get_json", lambda url, headers=None, timeout=15.0: page)
+        self.assertEqual(metadata.seerr_tv_requests(), [10])
+
+    def test_year_and_title_helpers(self):
+        d = {"name": "Alien: Earth", "firstAirDate": "2025-08-12"}
+        self.assertEqual(metadata.title_of(d), "Alien: Earth")
+        self.assertEqual(metadata.year_of(d), 2025)
+
+
+class _ShareClient(FakeClient):
+    """FakeClient that answers find_dupe_paths from a set of present ADC paths."""
+
+    def __init__(self, present, autosearch=None):
+        super().__init__({("GET", "/auto_search/items"): (200, autosearch or [])})
+        self.present = set(present)
+
+    def _call(self, method, path, body=None):
+        if path == "/share/find_dupe_paths":
+            self.calls.append((method, path, body))
+            return (200, ["x"]) if (body or {}).get("path") in self.present else (200, [])
+        return super()._call(method, path, body)
+
+
+class _PruneClient(_ShareClient):
+    """_ShareClient with a controllable bundle list + delete accounting."""
+
+    def __init__(self, present, autosearch, bundles=None):
+        super().__init__(present, autosearch)
+        self._bundles = bundles or []
+
+    def list_bundles(self, *a, **kw):
+        return self._bundles
+
+    @property
+    def deleted(self):
+        return [int(p.rsplit("/", 1)[1]) for m, p, _ in self.calls
+                if m == "DELETE" and p.startswith("/auto_search/items/")]
+
+
+class TestLoosePartExclude(unittest.TestCase):
+    """A single RAR volume (…-GROUP.r04) must never be grabbed in place of the
+    release folder — the durable backstop for FulDC++ dropping file_type."""
+
+    def test_episode_monitor_excludes_rar_parts(self):
+        c = FakeClient()
+        core.monitor_tv_season(c, "Silo", 3, log=lambda m: None)
+        exc = c.body_for("POST", "/auto_search/items").get("excluded_string", "")
+        for tok in (".r0", ".r4", ".r9", ".rar"):
+            self.assertIn(tok, exc)
+        # still keeps the real bad-source excludes
+        self.assertIn("camrip", exc)
+
+
+class TestReassertGuards(unittest.TestCase):
+    """FulDC++ resets file_type directory->any on its save cycle; the sweep
+    re-pins directory + loose-part excludes on every enabled %[inc] monitor."""
+
+    def _item(self, **kw):
+        base = {"id": 7, "enabled": True, "file_type": "0", "excluded_string": "camrip",
+                "search_string": "Silo S03E%[inc] 1080p",
+                "target": {"path": "S:\\dc\\series\\Silo.2023\\S03\\"}}
+        base.update(kw)
+        return base
+
+    def test_repins_directory_and_loose_excludes(self):
+        import season_monitor
+        c = FakeClient({("GET", "/auto_search/items"): (200, [self._item()])})
+        self.assertEqual(season_monitor._reassert_guards(c, lambda m: None), 1)
+        patch = c.body_for("PATCH", "/auto_search/items/7")
+        self.assertEqual(patch.get("file_type"), "directory")
+        self.assertIn(".r0", patch.get("excluded_string", ""))
+
+    def test_noop_when_already_pinned(self):
+        import season_monitor
+        c = FakeClient({("GET", "/auto_search/items"):
+                        (200, [self._item(file_type="7", excluded_string="camrip .r0 .rar")])})
+        self.assertEqual(season_monitor._reassert_guards(c, lambda m: None), 0)
+
+    def test_skips_disabled_items(self):
+        import season_monitor
+        c = FakeClient({("GET", "/auto_search/items"): (200, [self._item(enabled=False)])})
+        self.assertEqual(season_monitor._reassert_guards(c, lambda m: None), 0)
+
+
+class TestPruneUnshared(unittest.TestCase):
+    """PRUNE_UNSHARED=1: deleting a show from the share removes its %[inc]
+    monitor, so share-deletion is the single 'stop following' switch."""
+
+    ITEM = {"id": 42, "enabled": True, "cur_number": 5,
+            "search_string": "Silo S03E%[inc] 1080p",
+            "target": {"path": "S:\\dc\\series\\Silo.2023\\S03\\"}}
+    PRESENT = "/dc/series/Silo.2023/"
+
+    def _enable(self):
+        import os
+        os.environ["PRUNE_UNSHARED"] = "1"
+        self.addCleanup(os.environ.pop, "PRUNE_UNSHARED", None)
+
+    def test_prunes_when_folder_gone(self):
+        import season_monitor
+        self._enable()
+        c = _PruneClient(set(), [dict(self.ITEM)])   # folder not on share
+        self.assertEqual(season_monitor._prune_unshared(c, "S:\\dc", lambda m: None), 1)
+        self.assertIn(42, c.deleted)
+
+    def test_keeps_when_folder_present(self):
+        import season_monitor
+        self._enable()
+        c = _PruneClient({self.PRESENT}, [dict(self.ITEM)])
+        self.assertEqual(season_monitor._prune_unshared(c, "S:\\dc", lambda m: None), 0)
+        self.assertNotIn(42, c.deleted)
+
+    def test_keeps_when_never_grabbed(self):
+        import season_monitor
+        self._enable()
+        c = _PruneClient(set(), [dict(self.ITEM, cur_number=1)])   # cur==1
+        self.assertEqual(season_monitor._prune_unshared(c, "S:\\dc", lambda m: None), 0)
+
+    def test_keeps_when_downloading(self):
+        import season_monitor
+        self._enable()
+        c = _PruneClient(set(), [dict(self.ITEM)],
+                         bundles=[{"target": {"path": "S:\\dc\\series\\Silo.2023\\S03\\x\\"}}])
+        self.assertEqual(season_monitor._prune_unshared(c, "S:\\dc", lambda m: None), 0)
+
+    def test_off_by_default(self):
+        import season_monitor
+        c = _PruneClient(set(), [dict(self.ITEM)])
+        self.assertEqual(season_monitor._prune_unshared(c, "S:\\dc", lambda m: None), 0)
+        self.assertNotIn(42, c.deleted)
+
+
+class _BackfillClient(FakeClient):
+    """Scripts per-episode search results and records downloads."""
+
+    def __init__(self, per_ep):
+        super().__init__()
+        self.per_ep = per_ep          # {episode_number: [result dicts]}
+        self.downloads = []
+
+    def search(self, pattern, wait=10.0, poll=1.0, plateau=3.0, priority=0):
+        import re
+        m = re.search(r"E(\d{2})", pattern)
+        return 999, self.per_ep.get(int(m.group(1)) if m else 0, [])
+
+    def close(self, instance_id):
+        pass
+
+    def download_result(self, instance_id, result_id, target_directory=None, name=None):
+        self.downloads.append((result_id, target_directory, name))
+        return {"bundle_id": 1}
+
+
+def _dirres(name, owned=False, size=2 * 1024**3):
+    r = {"id": name, "name": name, "path": f"/tv/{name}/", "size": size,
+         "users": {"count": 5}, "type": {"id": "directory", "files": 10}}
+    if owned:
+        r["dupe"] = {"id": "share_full", "paths": ["S:\\x\\"]}
+    return r
+
+
+class TestBackfillEpisodes(unittest.TestCase):
+    """A newly-followed season's already-aired episodes are grabbed in one pass,
+    skipping any already on the share (dupe flag) or with no directory result."""
+
+    def test_grabs_missing_skips_owned_and_gaps(self):
+        c = _BackfillClient({
+            2: [_dirres("South.Park.S27E02.1080p.WEB.h264-EDITH")],
+            3: [_dirres("South.Park.S27E03.1080p.WEB.h264-ETHEL", owned=True)],
+            4: [],   # no release available yet
+        })
+        present = core.backfill_episodes(c, "South Park", 27, [2, 3, 4],
+                                         quality="1080p", log=lambda m: None)
+        self.assertEqual(present, {2, 3})              # 4 is a gap
+        self.assertEqual(len(c.downloads), 1)          # only E02 downloaded (E03 owned)
+        self.assertIn("S27E02", c.downloads[0][2])     # the release name
+
+    def test_rejects_loose_part_and_wrong_season(self):
+        c = _BackfillClient({
+            2: [{"id": "p", "name": "south.park.s27e02.1080p.web.h264-edith.r04",
+                 "path": "/tv/x/south.park.s27e02.1080p.web.h264-edith.r04",
+                 "size": 3 * 1024**3, "users": {"count": 5},
+                 "type": {"id": "file", "str": "r04"}},
+                _dirres("South.Park.S26E02.1080p.WEB.h264-EDITH")]})   # wrong season
+        present = core.backfill_episodes(c, "South Park", 27, [2], log=lambda m: None)
+        self.assertEqual(present, set())               # nothing valid for S27E02
+        self.assertEqual(c.downloads, [])
+
+
+class TestFirstMissing(unittest.TestCase):
+    def test_all_present_watches_next(self):
+        import season_monitor
+        self.assertEqual(season_monitor._first_missing([1, 2, 3], {1, 2, 3}), 4)
+
+    def test_trailing_gap_watches_it(self):
+        import season_monitor
+        self.assertEqual(season_monitor._first_missing([1, 2, 3], {1, 2}), 3)
+
+    def test_interior_gap(self):
+        import season_monitor
+        self.assertEqual(season_monitor._first_missing([1, 2, 3, 4], {1, 2, 4}), 3)
+
+    def test_empty(self):
+        import season_monitor
+        self.assertEqual(season_monitor._first_missing([], set()), 1)
+
+
+class TestRetireFinished(unittest.TestCase):
+    """Retire a season-N monitor once a later season exists (a show never adds
+    episodes to an old season); always keep the latest season's monitor."""
+
+    def _mon(self, mid, folder, season):
+        return {"id": mid, "enabled": True,
+                "search_string": f"{folder} S{season:02d}E%[inc] 1080p",
+                "target": {"path": f"S:\\dc\\series\\{folder}\\S{season:02d}\\"}}
+
+    def test_retires_old_keeps_latest(self):
+        import season_monitor
+        c = _PruneClient(set(), [self._mon(1, "South.Park.1997", 27),
+                                 self._mon(2, "South.Park.1997", 28)])
+        self.assertEqual(season_monitor._retire_finished(c, lambda m: None), 1)
+        self.assertIn(1, c.deleted)          # S27 retired
+        self.assertNotIn(2, c.deleted)       # S28 (latest) kept
+
+    def test_keeps_when_latest_only(self):
+        import season_monitor
+        c = _PruneClient(set(), [self._mon(1, "Silo.2023", 3)])
+        self.assertEqual(season_monitor._retire_finished(c, lambda m: None), 0)
+
+    def test_retires_when_next_season_present_on_share(self):
+        import season_monitor
+        c = _PruneClient({"/dc/series/Silo.2023/S04/"}, [self._mon(1, "Silo.2023", 3)])
+        self.assertEqual(season_monitor._retire_finished(c, lambda m: None), 1)
+        self.assertIn(1, c.deleted)
+
+
+class TestSeasonMonitorSecondary(unittest.TestCase):
+    """Union of TMDB+TVmaze aired seasons, and the widened follow set that
+    covers pack-grabbed shows with no %[inc] monitor."""
+
+    def _patch(self, **kw):
+        import season_monitor
+        for name, value in kw.items():
+            orig = getattr(season_monitor, name)
+            self.addCleanup(setattr, season_monitor, name, orig)
+            setattr(season_monitor, name, value)
+
+    def test_tvmaze_supplies_season_tmdb_missed(self):
+        import season_monitor
+        c = FakeClient({("GET", "/auto_search/items"):
+                        (200, [{"id": 1, "search_string": "Alien.Earth S01E%[inc] 1080",
+                                "target": {"path": "S:\\dc\\series\\Alien.Earth.2025\\S01\\"}}])})
+        self._patch(find_tv_id=lambda name, log=print: 157239,
+                    aired_seasons=lambda tid, log=print: {1},          # TMDB blind to S2
+                    external_ids=lambda tid, log=print: ("tt1", 458912),
+                    tvmaze_aired=lambda **k: {1, 2},                   # TVmaze knows S2
+                    tvmaze_episodes=lambda **k: [],
+                    seerr_tv_requests=lambda log=print: [])
+        self.assertEqual(season_monitor.sweep(c, log=lambda m: None), 1)
+        self.assertIn("Alien.Earth S02E%[inc]",
+                      c.body_for("POST", "/auto_search/items")["search_string"])
+
+    def test_seerr_request_covers_pack_grabbed_show(self):
+        import season_monitor
+        c = _ShareClient({"/dc/series/Alien.Earth.2025/",
+                          "/dc/series/Alien.Earth.2025/S01/"})   # S01 on disk, no monitor
+        self._patch(seerr_tv_requests=lambda log=print: [157239],
+                    details=lambda tid, mt="tv", log=print: {
+                        "name": "Alien: Earth", "firstAirDate": "2025-08-12", "genres": []},
+                    external_ids=lambda tid, log=print: (None, 458912),
+                    aired_seasons=lambda tid, log=print: {1},
+                    tvmaze_aired=lambda **k: {1, 2},
+                    tvmaze_episodes=lambda **k: [])
+        self.assertEqual(season_monitor.sweep(c, log=lambda m: None), 1)
+        body = c.body_for("POST", "/auto_search/items")
+        self.assertIn("Alien.Earth S02E%[inc]", body["search_string"])
+        self.assertEqual(body["target"], "S:\\dc\\series\\Alien.Earth.2025\\S02\\")
+
+    def test_seerr_show_not_on_share_is_skipped(self):
+        import season_monitor
+        c = _ShareClient(set())   # nothing present -> not actually grabbed
+        self._patch(seerr_tv_requests=lambda log=print: [157239],
+                    details=lambda tid, mt="tv", log=print: {
+                        "name": "Alien: Earth", "firstAirDate": "2025-08-12", "genres": []},
+                    external_ids=lambda tid, log=print: (None, 458912),
+                    aired_seasons=lambda tid, log=print: {1},
+                    tvmaze_aired=lambda **k: {1, 2})
+        self.assertEqual(season_monitor.sweep(c, log=lambda m: None), 0)
+
+    def test_present_season_not_regrabbed(self):
+        import season_monitor
+        c = _ShareClient({"/dc/series/Alien.Earth.2025/",
+                          "/dc/series/Alien.Earth.2025/S01/",
+                          "/dc/series/Alien.Earth.2025/S02/"})   # S2 already there
+        self._patch(seerr_tv_requests=lambda log=print: [157239],
+                    details=lambda tid, mt="tv", log=print: {
+                        "name": "Alien: Earth", "firstAirDate": "2025-08-12", "genres": []},
+                    external_ids=lambda tid, log=print: (None, 458912),
+                    aired_seasons=lambda tid, log=print: {1},
+                    tvmaze_aired=lambda **k: {1, 2})
+        self.assertEqual(season_monitor.sweep(c, log=lambda m: None), 0)
+
+
+class TestLibraryEnumeration(unittest.TestCase):
+    """Pluggable, media-server-agnostic library source (opt-in)."""
+
+    def _env(self, **kw):
+        for k, v in kw.items():
+            self.addCleanup(os.environ.pop, k, None)
+            os.environ[k] = v
+
+    def test_disabled_by_default(self):
+        import library
+        self.addCleanup(os.environ.pop, "MONITOR_LIBRARY", None)
+        os.environ.pop("MONITOR_LIBRARY", None)
+        self.assertEqual(library.owned_shows(log=lambda m: None), [])
+
+    def test_unknown_backend_is_empty(self):
+        import library
+        self._env(MONITOR_LIBRARY="1", MEDIASERVER="kodi")
+        self.assertEqual(library.owned_shows(log=lambda m: None), [])
+
+    def test_plex_backend_dispatch(self):
+        import library
+        self._env(MONITOR_LIBRARY="1", MEDIASERVER="plex")
+        orig = library._plex_shows
+        self.addCleanup(setattr, library, "_plex_shows", orig)
+        library._plex_shows = lambda log: [{"title": "X", "year": 2025, "tmdb": 1}]
+        self.assertEqual(library.owned_shows(log=lambda m: None)[0]["title"], "X")
+
+    def test_plex_all_shows_parses_ids(self):
+        from plex import Plex
+        p = Plex("http://x", "t")
+        p.sections = lambda: [{"key": "2", "type": "show", "title": "TV"}]
+        p._get = lambda path, params=None: (
+            b'<MediaContainer><Directory title="Alien: Earth" year="2025">'
+            b'<Guid id="tmdb://157239"/><Guid id="tvdb://458912"/></Directory>'
+            b'<Directory title="Littlest Pet Shop (2012)" year="2012"/>'
+            b'</MediaContainer>')
+        self.assertEqual(p.all_shows(), [
+            {"title": "Alien: Earth", "year": 2025,
+             "tmdb": 157239, "tvdb": 458912, "imdb": None},
+            # embedded "(2012)" stripped so the folder doesn't double-year
+            {"title": "Littlest Pet Shop", "year": 2012,
+             "tmdb": None, "tvdb": None, "imdb": None}])
+
+
+class TestSeasonMonitorLibrary(unittest.TestCase):
+    """A show owned in the media-server library (no monitor, no Seerr request)
+    still gets its new season, located to the right DC root."""
+
+    def _patch(self, **kw):
+        import season_monitor
+        for name, value in kw.items():
+            orig = getattr(season_monitor, name)
+            self.addCleanup(setattr, season_monitor, name, orig)
+            setattr(season_monitor, name, value)
+
+    def test_library_show_gets_new_season(self):
+        import season_monitor
+        import library
+        c = _ShareClient({"/dc/series/Murderbot.2025/",
+                          "/dc/series/Murderbot.2025/S01/"})
+        self.addCleanup(setattr, library, "owned_shows", library.owned_shows)
+        library.owned_shows = lambda log=print: [
+            {"title": "Murderbot", "year": 2025, "tmdb": 1, "tvdb": 222}]
+        self._patch(seerr_tv_requests=lambda log=print: [],
+                    external_ids=lambda tid, log=print: (None, 222),
+                    aired_seasons=lambda tid, log=print: {1},
+                    tvmaze_aired=lambda **k: {1, 2},
+                    tvmaze_episodes=lambda **k: [])
+        self.assertEqual(season_monitor.sweep(c, log=lambda m: None), 1)
+        body = c.body_for("POST", "/auto_search/items")
+        self.assertIn("Murderbot S02E%[inc]", body["search_string"])
+        self.assertEqual(body["target"], "S:\\dc\\series\\Murderbot.2025\\S02\\")
+
+    def test_library_show_not_on_share_skipped(self):
+        import season_monitor
+        import library
+        c = _ShareClient(set())   # owned in Plex but not in the DC share
+        self.addCleanup(setattr, library, "owned_shows", library.owned_shows)
+        library.owned_shows = lambda log=print: [
+            {"title": "Murderbot", "year": 2025, "tmdb": 1}]
+        self._patch(seerr_tv_requests=lambda log=print: [],
+                    external_ids=lambda tid, log=print: (None, None),
+                    aired_seasons=lambda tid, log=print: {1, 2},
+                    tvmaze_aired=lambda **k: set())
+        self.assertEqual(season_monitor.sweep(c, log=lambda m: None), 0)
+
+
+class TestSeasonMatch(unittest.TestCase):
+    """A season grab must not accept a different season's pack (a hub search for
+    'Show S02' can loosely return the 'Show S01' pack — the Ahsoka bug)."""
+
+    def test_result_seasons(self):
+        self.assertEqual(ranker.result_seasons("Ahsoka.S01.1080p.BluRay.x264-BROADCAST"), {1})
+        self.assertEqual(ranker.result_seasons("Ahsoka.S02E05.1080p"), {2})
+        self.assertEqual(ranker.result_seasons("Ahsoka.COMPLETE.1080p"), set())
+
+    def test_matches_season(self):
+        self.assertFalse(ranker.matches_season("Ahsoka.S01.1080p", 2))
+        self.assertTrue(ranker.matches_season("Ahsoka.S02.1080p", 2))
+        self.assertTrue(ranker.matches_season("Ahsoka.COMPLETE.1080p", 2))  # ambiguous ok
+
+    def test_grab_tv_season_rejects_wrong_season_pack(self):
+        s01 = [{"id": "t1", "path": "/d/Ahsoka.S01.1080p.BluRay.x264-BROADCAST/",
+                "size": 40 * 1024**3, "users": {"count": 6}, "slots": {"free": 4},
+                "type": {"id": "directory"}}]
+        c = FakeClient({("GET", "/search/1/results/0/200"): (200, s01)})
+        res = core.grab_tv_season(c, "Ahsoka", 2, year=2023, wait=0, log=lambda m: None)
+        self.assertEqual(res["mode"], "monitor")   # rejected S01, fell to %[inc]
+        self.assertFalse(any("/download" in p for _, p, _ in c.calls),
+                         "must not download the wrong-season pack")
 
 
 if __name__ == "__main__":

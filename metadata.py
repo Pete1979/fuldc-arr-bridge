@@ -71,6 +71,29 @@ def _kids_genre_set() -> set[str]:
     return {g.strip().lower() for g in raw.split(",") if g.strip()}
 
 
+def _flags(d: dict, media_type: str) -> tuple[bool, bool]:
+    genres = [g.get("name", "") for g in d.get("genres", [])]
+    kids = any(name.lower() in _kids_genre_set() for name in genres)
+    ended = (media_type == "tv"
+             and (d.get("status") or "").strip().lower() in ENDED_STATUSES)
+    return kids, ended
+
+
+def _original_title(d: dict) -> str | None:
+    """The title in its original language, when that language isn't English.
+
+    DC/scene releases of a foreign film use its original title (Nordic content
+    on Swedish hubs especially), not Seerr's translated display title. Handles
+    TMDB (snake_case) and Seerr (camelCase); movie=title, tv=name.
+    """
+    lang = (d.get("original_language") or d.get("originalLanguage") or "").lower()
+    if lang == "en":
+        return None
+    orig = (d.get("original_title") or d.get("originalTitle")
+            or d.get("original_name") or d.get("originalName") or "").strip()
+    return orig or None
+
+
 def classify(tmdb_id: int | None, media_type: str, *, log=print) -> tuple[bool, bool]:
     """Return (is_kids, is_ended) from a single metadata lookup.
 
@@ -82,11 +105,24 @@ def classify(tmdb_id: int | None, media_type: str, *, log=print) -> tuple[bool, 
     d = _details(tmdb_id, media_type, log=log)
     if not d:
         return False, False
-    genres = [g.get("name", "") for g in d.get("genres", [])]
-    kids = any(name.lower() in _kids_genre_set() for name in genres)
-    ended = (media_type == "tv"
-             and (d.get("status") or "").strip().lower() in ENDED_STATUSES)
-    return kids, ended
+    return _flags(d, media_type)
+
+
+def request_meta(tmdb_id: int | None, media_type: str,
+                 *, log=print) -> tuple[bool, bool, str | None, int | None]:
+    """(is_kids, is_ended, original_title, number_of_seasons) from one lookup.
+
+    original_title is the non-English original-language title (what DC scene
+    releases of foreign films are named), or None when English/unavailable.
+    number_of_seasons lets the grab widen its search for a single-season show
+    (whole series often shared as one COMPLETE pack with no S<NN> token).
+    """
+    d = _details(tmdb_id, media_type, log=log)
+    if not d:
+        return False, False, None, None
+    kids, ended = _flags(d, media_type)
+    nseasons = d.get("number_of_seasons") or d.get("numberOfSeasons")
+    return kids, ended, _original_title(d), nseasons
 
 
 def is_kids(tmdb_id: int | None, media_type: str, *, log=print) -> bool:
@@ -139,4 +175,98 @@ def aired_seasons(tmdb_id: int | None, *, log=print) -> set[int]:
         if n > 0 and air and air <= today:
             out.add(int(n))
     return out
+
+
+def aired_season_dates(tmdb_id: int | None, *, log=print) -> dict[int, str]:
+    """{season number -> ISO air date} for seasons that have started airing.
+
+    Same source as aired_seasons(), but keeps the dates so the sweep can tell a
+    genuinely new season from a decade-old one on an ended show."""
+    d = _details(tmdb_id, "tv", log=log)
+    if not d:
+        return {}
+    today = datetime.date.today().isoformat()
+    out: dict[int, str] = {}
+    for s in d.get("seasons", []):
+        n = s.get("seasonNumber", s.get("season_number", 0)) or 0
+        air = (s.get("airDate") or s.get("air_date") or "")[:10]
+        if n > 0 and air and air <= today:
+            out[int(n)] = air
+    return out
+
+
+def details(tmdb_id: int | None, media_type: str = "tv", *, log=print) -> dict | None:
+    """Public accessor for a title's metadata dict (or None)."""
+    return _details(tmdb_id, media_type, log=log)
+
+
+def external_ids(tmdb_id: int | None, media_type: str = "tv",
+                 *, log=print) -> tuple[str | None, int | None]:
+    """(imdb_id, tvdb_id) for a title, used to look the show up on TVmaze.
+
+    Seerr returns these in the details `externalIds`; TMDB's plain details omit
+    them, so fall back to TMDB's dedicated external_ids endpoint when a key is
+    configured."""
+    d = _details(tmdb_id, media_type, log=log)
+    if d:
+        ext = d.get("externalIds") or d.get("external_ids") or {}
+        imdb = ext.get("imdbId") or ext.get("imdb_id")
+        tvdb = ext.get("tvdbId") or ext.get("tvdb_id")
+        if imdb or tvdb:
+            return imdb, tvdb
+    tmdb_key = os.environ.get("TMDB_API_KEY", "").strip()
+    if tmdb_key and media_type == "tv" and tmdb_id:
+        try:
+            e = _get_json(f"{TMDB_BASE}/tv/{tmdb_id}/external_ids"
+                          f"?api_key={urllib.parse.quote(tmdb_key)}")
+            return e.get("imdb_id"), e.get("tvdb_id")
+        except Exception as e:  # noqa: BLE001 - best-effort
+            log(f"# external_ids lookup failed for tv {tmdb_id}: {e}")
+    return None, None
+
+
+def title_of(d: dict) -> str:
+    return (d.get("name") or d.get("title") or "").strip()
+
+
+def year_of(d: dict) -> int | None:
+    date = (d.get("firstAirDate") or d.get("first_air_date")
+            or d.get("releaseDate") or d.get("release_date") or "")[:4]
+    return int(date) if date.isdigit() else None
+
+
+def is_kids_details(d: dict) -> bool:
+    genres = [g.get("name", "") for g in d.get("genres", [])]
+    return any(name.lower() in _kids_genre_set() for name in genres)
+
+
+def seerr_tv_requests(*, log=print, page_size: int = 50,
+                      max_pages: int = 40) -> list[int]:
+    """Unique TMDB ids of every TV title requested in Seerr — the real set of
+    shows the user follows (a pack-grabbed show has no %[inc] monitor to key
+    off). Empty unless SEERR_URL + SEERR_API_KEY are configured."""
+    base = os.environ.get("SEERR_URL", "").strip()
+    key = os.environ.get("SEERR_API_KEY", "").strip()
+    if not (base and key):
+        return []
+    ids: list[int] = []
+    for page in range(max_pages):
+        url = (f"{base.rstrip('/')}/api/v1/request?take={page_size}"
+               f"&skip={page * page_size}&filter=all&sort=added")
+        try:
+            data = _get_json(url, headers={"X-Api-Key": key})
+        except Exception as e:  # noqa: BLE001 - best-effort
+            log(f"# seerr request list failed: {e}")
+            break
+        results = data.get("results") or []
+        for r in results:
+            m = r.get("media") or {}
+            if str(m.get("mediaType") or "").lower() == "tv" and m.get("tmdbId"):
+                try:
+                    ids.append(int(m["tmdbId"]))
+                except (TypeError, ValueError):
+                    pass
+        if len(results) < page_size:
+            break
+    return list(dict.fromkeys(ids))
 

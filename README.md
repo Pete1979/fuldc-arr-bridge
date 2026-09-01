@@ -90,13 +90,17 @@ Then request something → approve it → watch `docker compose logs -f`.
 | `DC_ROOT` | *(required)* | **your** DC share root on the FulDC++ host, a Windows path (e.g. `S:\dc`, `D:\Media`). `movies→DC_ROOT\movies\`, `series→DC_ROOT\series\<Show>\S<NN>\` |
 | `MOVIES_DIR` / `SERIES_DIR` | *(from DC_ROOT)* | optional full-path overrides for non-standard layouts |
 | `MOVIES_ONLY` | `0` | `1` = only movies, `0` = movies + TV |
-| `QUALITY` | *(any)* | e.g. `1080p` — movies: only that quality is grabbed; TV: baked into the `%[inc]` episode monitor |
+| `QUALITY` | *(any)* | e.g. `1080p` — preferred quality (chosen when available, else falls back to the best/untagged release); TV: baked into the `%[inc]` episode monitor |
 | `KIDS_ROUTING` | `1` | route kids titles to `kids.movies` / `kids.series` (needs a metadata source below; `0` disables) |
 | `TMDB_API_KEY` | — | metadata source for kids routing — a free TMDB API key |
 | `SEERR_URL` / `SEERR_API_KEY` | — | alternative metadata source: reuse your Seerr/Jellyseerr/Overseerr |
 | `KIDS_MOVIES_DIR` / `KIDS_SERIES_DIR` | *(from DC_ROOT)* | override kids folders (full Windows paths) |
 | `KIDS_GENRES` | `Kids,Family` | genres that mark a title as kids (Animation alone is **not** kids) |
-| `SEASON_CHECK_HOURS` | `0` | auto new-season detection: every N hours, add a `%[inc]` monitor for a newly-aired season of a show you already follow (needs a metadata source; `0` = off) |
+| `SEASON_CHECK_HOURS` | `0` | auto new-season detection: every N hours, add a `%[inc]` monitor for a newly-aired season of a show you follow — live `%[inc]` monitors **and** your Seerr TV requests (so pack-grabbed shows are covered). Aired seasons = TMDB ∪ TVmaze (keyless, covers TMDB's lag on continuing shows). Needs a metadata source; `0` = off |
+| `SEASON_NOTIFY_WEBHOOK` | – | optional URL to POST a `{event,show,season,mode,target}` ping to when a new season is detected (Discord/ntfy/HA/…) |
+| `MONITOR_LIBRARY` | `0` | `1` = also follow every series in your media-server library (via `MEDIASERVER`), not just Seerr requests — so a show you own but never re-requested still gets new seasons. Falls back to Seerr requests + monitors if no supported media server is set |
+| `SEASON_RECENT_DAYS` | `540` | only auto-grab a new season that aired within this many days; older aired seasons of a show you're behind on are treated as backfill (request via Seerr) rather than pulled in |
+| `PRUNE_UNSHARED` | `0` | `1` = when a followed show's folder is deleted from your share, remove its `%[inc]` episode monitor on the next sweep (only if it had grabbed episodes and nothing is downloading into it) — makes share-deletion the single "stop following" switch |
 | `MEDIASERVER` | `none` | optional post-download refresh: `plex` \| `jellyfin` \| `webhook` \| `none` |
 | `WEBHOOK_TOKEN` | *(empty)* | shared secret for the webhook endpoint. Blank = **anyone who can reach the port can queue downloads** — set it unless the port is strictly LAN-internal |
 | `PORT` | `8080` | webhook listen port |
