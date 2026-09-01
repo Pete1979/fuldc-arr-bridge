@@ -13,6 +13,19 @@ import hmac
 # sanity ceiling, not a tuning knob.
 MAX_BODY_BYTES = 1 * 1024 * 1024
 
+# Socket timeout for a single request, applied by both handlers as a class attribute
+# (StreamRequestHandler.setup calls settimeout with it).
+#
+# Without one, read_body below blocks until the declared number of bytes arrives or the peer
+# closes. A caller that announces Content-Length: 1000000 and then sends nothing therefore pins a
+# ThreadingHTTPServer thread for as long as it likes -- and both servers read the body BEFORE they
+# know who is calling: the qBittorrent login route has nothing to authenticate against yet, and the
+# webhook has no token to check when WEBHOOK_TOKEN is unset. A handful of those and the bridge
+# stops answering anything.
+#
+# Generous enough that a slow but real client is never cut off; short enough that a stalled one is.
+REQUEST_TIMEOUT_SECONDS = 30
+
 
 def secure_equal(got: str | None, want: str | None) -> bool:
     """Constant-time comparison that tolerates arbitrary input.

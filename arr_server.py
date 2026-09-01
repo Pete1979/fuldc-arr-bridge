@@ -25,7 +25,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from fuldc_client import FulDCClient
-from httputil import read_body, secure_equal
+from httputil import REQUEST_TIMEOUT_SECONDS, read_body, secure_equal
 from ranker import Prefs
 import torznab
 import qbit
@@ -48,6 +48,10 @@ def _apikey_ok(params: dict) -> bool:
 
 
 class Handler(BaseHTTPRequestHandler):
+    # See httputil.REQUEST_TIMEOUT_SECONDS: without this a caller can announce a body and never
+    # send it, holding a request thread for as long as it likes -- before any authentication.
+    timeout = REQUEST_TIMEOUT_SECONDS
+
     def _send(self, code: int, body: bytes, ctype: str = "application/xml; charset=utf-8"):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
@@ -213,7 +217,12 @@ class Handler(BaseHTTPRequestHandler):
         season = None
         if params.get("season", [""])[0].isdigit():
             season = int(params["season"][0])
-        limit = int(params.get("limit", ["50"])[0])
+        # Guarded the way `season` above it is. This sat outside the try below, so a non-numeric
+        # limit -- a typo, a probe, anything -- raised ValueError straight out of the handler and
+        # the request got no response at all, only a traceback in the log. Clamped too: the value
+        # comes from whatever indexer client is calling, and a huge limit is a search we then run.
+        raw_limit = params.get("limit", ["50"])[0]
+        limit = max(1, min(int(raw_limit) if raw_limit.isdigit() else 50, 500))
         try:
             items = torznab.search_items(client(), query=q, kind=kind,
                                          season=season, limit=limit, prefs=Prefs())
@@ -230,6 +239,13 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     import sys
     port = int(os.environ.get("ARR_PORT", "9117"))
+    # Fail at startup, not on the first request. client() reads FULDC_PASS with os.environ[...],
+    # so without it every search and every download raised a KeyError inside the handler thread:
+    # the service came up, answered health probes 200, and returned a 500 to Radarr/Sonarr for
+    # everything, with only a traceback in the log to say why. webhook_server.py has had this
+    # check since it hit the same thing; this half was never given one.
+    if not os.environ.get("FULDC_PASS"):
+        sys.exit("FULDC_PASS is not set — the bridge cannot talk to FulDC++.")
     if not os.environ.get("TORZNAB_APIKEY"):
         sys.exit("TORZNAB_APIKEY is not set. This port can queue downloads on "
                  "your box — pick any random string, set it here and use the "
