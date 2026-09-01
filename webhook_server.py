@@ -22,8 +22,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from fuldc_client import FulDCClient
 from httputil import REQUEST_TIMEOUT_SECONDS, body_too_large, read_body, secure_equal
-from ranker import Prefs
-from httputil import body_too_large, read_body, secure_equal
 from ranker import Prefs, fold
 from core import grab_tv_season, hybrid_grab
 from metadata import request_meta
