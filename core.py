@@ -47,7 +47,20 @@ BAD_SOURCE = " ".join(
 # release DIRECTORY never does (small .nfo/.sfv/.jpg parts are already below the
 # size floor). Kept out of BAD_SOURCE so it doesn't trip the short-token guard.
 LOOSE_PART = " ".join([f".r{d}" for d in range(10)] + [".rar"])
-AUTOSEARCH_EXCLUDE = f"{BAD_SOURCE} {LOOSE_PART}"
+
+# A DVD image (VIDEO_TS/ISO) is unplayable in Plex, so the server-side
+# AutoSearch must not grab one either — otherwise rejecting it in the ranker
+# just defers the same download to the fallback item. Substring matching makes
+# the short tags dangerous ("dvdr" is inside "DVDRip", which IS playable, and
+# "iso" is inside "Isolde"), so they are delimiter-anchored like _BAD_SHORT.
+_DISC_LONG = ["video_ts", "videots", "untouched"]
+_DISC_SHORT = ["dvdr", "dvd5", "dvd9", "iso"]
+DISC_IMAGE = " ".join(
+    _DISC_LONG + [f"{lead}{t}{trail}"
+                  for t in _DISC_SHORT
+                  for lead, trail in ((".", "."), (".", "-"), ("-", "-"))]
+)
+AUTOSEARCH_EXCLUDE = f"{BAD_SOURCE} {LOOSE_PART} {DISC_IMAGE}"
 
 # One-shot AutoSearch items (a specific movie or season) stop searching after
 # this long. Without it an abandoned request searches the hubs forever. The

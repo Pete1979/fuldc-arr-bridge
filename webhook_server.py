@@ -102,6 +102,8 @@ def _prefs(*, kids=False) -> Prefs:
             p.prefer_quality = [q] + p.prefer_quality
     if kids:
         p.prefer_lang = KIDS_PREFERRED_LANG.copy()
+    if os.environ.get("ALLOW_DISC_IMAGES", "0") == "1":
+        p.allow_disc_images = True
     return p
 
 

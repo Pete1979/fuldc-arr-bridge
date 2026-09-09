@@ -40,6 +40,26 @@ QUALITY_RANK = {"2160p": 4, "4k": 4, "uhd": 4, "1080p": 3, "720p": 2, "480p": 1}
 BAD_TOKENS = {"cam", "camrip", "ts", "telesync", "tc", "telecine", "hdcam",
               "screener", "scr", "sample", "workprint"}
 
+# A DVD disc image (VIDEO_TS/ISO inside a RAR set) is not a playable video
+# file — Plex cannot play it at all, so grabbing one is worse than grabbing
+# nothing. Matched on the RELEASE NAME only: the hub folder these sit in is
+# literally called "DVDR-Tegnefilm", and matching the whole path would reject
+# every release under it (same false-positive class as BAD_TOKENS).
+#
+# 'DVDRip' is a re-encode and perfectly playable, so the trailing delimiter is
+# what separates it from 'DVDr'. 'iso' may not match at the start of a name, so
+# a title that opens with the word (e.g. 'Iso Vaalee') survives.
+DISC_IMAGE_RE = re.compile(
+    r"(?:^|[.\s_-])(?:dvd-?r|dvd[59]|video_?ts|dvd-?full|untouched)(?:$|[.\s_-])"
+    r"|(?<=[.\s_-])iso(?=$|[.\s_-])",
+    re.IGNORECASE,
+)
+
+
+def is_disc_image(release: str) -> bool:
+    """Is this release a DVD image rather than a playable video file?"""
+    return bool(DISC_IMAGE_RE.search(release or ""))
+
 _norm = re.compile(r"[.\s_\-]+")
 ARTICLE_RE = re.compile(r"^(the|a|an)\s+", re.IGNORECASE)
 
@@ -152,6 +172,7 @@ class Prefs:
     prefer_codec: list[str] = field(default_factory=lambda: ["x265", "x264"])
     prefer_lang: list[str] = field(default_factory=list)   # e.g. ["swesub"]
     require_quality: list[str] = field(default_factory=list)  # e.g. ["1080p"]; empty = any
+    allow_disc_images: bool = False        # DVD images are unplayable in Plex
     min_size: int = 700 * 1024**2          # 700 MB (movies / season packs)
     min_size_episode: int = 100 * 1024**2  # 100 MB (a single TV episode is small)
     max_size: int = 100 * 1024**3          # 100 GB
@@ -257,6 +278,10 @@ def rank(results: list[dict], title: str, year: int | None, prefs: Prefs,
     cands = [score_result(r, title, year, prefs, kind) for r in results]
     if not include_dupes:
         cands = [c for c in cands if not c.result.get("dupe")]
+    if not prefs.allow_disc_images:
+        # Unlike quality this has no fallback: an unplayable release is never
+        # better than none, so let the AutoSearch monitor wait for a real one.
+        cands = [c for c in cands if not is_disc_image(c.release)]
     if prefs.require_quality:
         want = [q.lower() for q in prefs.require_quality]
         # Quality is a PREFERENCE, not a hard requirement: keep the preferred

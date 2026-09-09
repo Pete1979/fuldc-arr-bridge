@@ -690,6 +690,62 @@ class TestKidsMovieLanguagePreference(unittest.TestCase):
         self.assertEqual(webhook_server._prefs(kids=False).prefer_lang, [])
 
 
+class TestDiscImageRejection(unittest.TestCase):
+    """A DVD image is VIDEO_TS/ISO in a RAR set — Plex cannot play it, so it
+    must never be grabbed even when it is the only result."""
+
+    def _res(self, path, size=4 * 1024**3):
+        return {"path": path, "size": size, "users": {"count": 3},
+                "type": {"id": "directory"}}
+
+    def test_dvdr_is_rejected_even_as_the_only_result(self):
+        res = [self._res("/DVDR-Tegnefilm/Barbie.Of.Swan.Lake.2003.NORDIC.PAL.DVDr-Jarina/")]
+        self.assertEqual(
+            ranker.rank(res, "Barbie of Swan Lake", 2003,
+                        ranker.Prefs(require_quality=["1080p"])), [])
+
+    def test_dvdrip_is_playable_and_kept(self):
+        """DVDRip is a re-encode, not a disc image — rejecting it would throw
+        away the only watchable copy of most older kids films."""
+        self.assertFalse(ranker.is_disc_image("Barbie.Of.Swan.Lake.2003.DVDRip.XviD-GRP"))
+        res = [self._res("/movies/Barbie.Of.Swan.Lake.2003.DVDRip.XviD-GRP/")]
+        self.assertEqual(len(ranker.rank(res, "Barbie of Swan Lake", 2003, ranker.Prefs())), 1)
+
+    def test_hub_root_folder_does_not_poison_the_release(self):
+        """The releases live under a hub folder called DVDR-Tegnefilm; matching
+        the path instead of the release name would reject all of them."""
+        res = [self._res("/DVDR-Tegnefilm/Barbie.Of.Swan.Lake.2003.NORDIC.1080p.WEB.h264-GRP/")]
+        self.assertEqual(len(ranker.rank(res, "Barbie of Swan Lake", 2003, ranker.Prefs())), 1)
+
+    def test_other_disc_image_spellings(self):
+        for name in ["Movie.2003.PAL.DVD-R-GRP", "Movie.2003.DVD9.NORDiC",
+                     "Movie.2003.DVD5", "Movie.2003.VIDEO_TS", "Movie.2003.ISO"]:
+            self.assertTrue(ranker.is_disc_image(name), f"{name!r} slipped through")
+
+    def test_title_starting_with_iso_survives(self):
+        self.assertFalse(ranker.is_disc_image("Iso.Vaalee.2020.1080p.WEB.h264-GRP"))
+
+    def test_operator_can_opt_back_in(self):
+        res = [self._res("/x/Barbie.Of.Swan.Lake.2003.NORDIC.PAL.DVDr-Jarina/")]
+        prefs = ranker.Prefs(allow_disc_images=True)
+        self.assertEqual(len(ranker.rank(res, "Barbie of Swan Lake", 2003, prefs)), 1)
+
+    def test_autosearch_excludes_disc_images_without_eating_dvdrip(self):
+        """The AutoSearch fallback matches SUBSTRINGS, so a bare 'dvdr' token
+        would also exclude every playable DVDRip."""
+        toks = core.AUTOSEARCH_EXCLUDE.split()
+        hit = lambda name: [t for t in toks if t in name.lower()]  # noqa: E731
+        self.assertTrue(hit("Barbie.Of.Swan.Lake.2003.NORDIC.PAL.DVDr-Jarina"))
+        self.assertEqual(hit("Barbie.Of.Swan.Lake.2003.DVDRip.XviD-GRP"), [])
+        self.assertEqual(hit("Isolde.2020.1080p.WEB.h264-GRP"), [])
+
+    def test_disc_tokens_are_anchored(self):
+        for tok in core.DISC_IMAGE.split():
+            if len(tok.strip(".-")) < 5:
+                self.assertTrue(tok[0] in ".-" and tok[-1] in ".-",
+                                f"{tok!r} is short and unanchored")
+
+
 class TestRequestedSeasons(unittest.TestCase):
     def _p(self, value):
         return {"extra": [{"name": "Requested Seasons", "value": value}]}
