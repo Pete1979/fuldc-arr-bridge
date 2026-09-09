@@ -90,13 +90,18 @@ def requested_seasons(payload: dict) -> list[int]:
     return []
 
 
-def _prefs() -> Prefs:
+KIDS_PREFERRED_LANG = ["swedish", "nordic", "sv", "multi"]
+
+
+def _prefs(*, kids=False) -> Prefs:
     p = Prefs()
     q = os.environ.get("QUALITY", "").strip().lower()
     if q:
         p.require_quality = [q]
         if q not in p.prefer_quality:
             p.prefer_quality = [q] + p.prefer_quality
+    if kids:
+        p.prefer_lang = KIDS_PREFERRED_LANG.copy()
     return p
 
 
@@ -116,13 +121,14 @@ def _after_download(c: FulDCClient, res: dict, kind: str) -> None:
 
 
 def _grab(title, year, *, kind, season=None, movies_dir=None, series_dir=None,
-          single_season=False):
+          single_season=False, kids=False):
     print(f"[grab] {title!r} ({year}) type={kind}" + (f" S{season:02d}" if season else ""),
           flush=True)
     try:
         c = client()
         res = hybrid_grab(c, title, year, kind=kind, season=season,
-                          prefs=_prefs(), dc_root=os.environ.get("DC_ROOT", "S:\\dc"),
+                          prefs=_prefs(kids=kids and kind == "movie"),
+                          dc_root=os.environ.get("DC_ROOT", "S:\\dc"),
                           movies_dir=movies_dir, series_dir=series_dir,
                           complete_fallback=single_season,
                           log=lambda m: print(m, flush=True))
@@ -204,7 +210,7 @@ def _handle(payload: dict) -> None:
         else:
             _grab(title, year, kind="series", series_dir=ser_dir)
     else:
-        _grab(title, year, kind="movie", movies_dir=mov_dir)
+            _grab(title, year, kind="movie", movies_dir=mov_dir, kids=kids)
 
 
 # /health talks to FulDC++, so cache it: k8s probes every 10s and a readiness

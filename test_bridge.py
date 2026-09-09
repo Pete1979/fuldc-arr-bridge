@@ -679,6 +679,17 @@ class TestWebhookPayloadHandling(unittest.TestCase):
         self.assertIn("Dune", out)
 
 
+class TestKidsMovieLanguagePreference(unittest.TestCase):
+    def test_kids_movie_prefers_swedish_language_tags(self):
+        prefs = webhook_server._prefs(kids=True)
+
+        self.assertEqual(prefs.prefer_lang, ["swedish", "nordic", "sv", "multi"])
+
+    def test_non_kids_movies_do_not_get_kids_language_preference(self):
+        self.assertEqual(webhook_server._prefs().prefer_lang, [])
+        self.assertEqual(webhook_server._prefs(kids=False).prefer_lang, [])
+
+
 class TestRequestedSeasons(unittest.TestCase):
     def _p(self, value):
         return {"extra": [{"name": "Requested Seasons", "value": value}]}
