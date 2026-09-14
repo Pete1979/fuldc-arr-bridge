@@ -90,7 +90,8 @@ Then request something → approve it → watch `docker compose logs -f`.
 | `DC_ROOT` | *(required)* | **your** DC share root on the FulDC++ host, a Windows path (e.g. `S:\dc`, `D:\Media`). `movies→DC_ROOT\movies\`, `series→DC_ROOT\series\<Show>\S<NN>\` |
 | `MOVIES_DIR` / `SERIES_DIR` | *(from DC_ROOT)* | optional full-path overrides for non-standard layouts |
 | `MOVIES_ONLY` | `0` | `1` = only movies, `0` = movies + TV |
-| `QUALITY` | *(any)* | e.g. `1080p` — preferred quality (chosen when available, else falls back to the best/untagged release); TV: baked into the `%[inc]` episode monitor |
+| `QUALITY` | *(any)* | preferred quality, e.g. `1080p`. Accepts an ordered ladder (`2160p,1080p`): the best tier that has results wins, and if none match it falls back to any release. TV: baked into the `%[inc]` episode monitor |
+| `QUALITY_MOVIES` | *(from `QUALITY`)* | quality ladder for **grown-up movies only** — e.g. `2160p,1080p` to prefer 4K and fall back to 1080p. Series and kids movies keep `QUALITY`, because an AutoSearch/`%[inc]` monitor is a single literal match string with no fallback and would go dead on a title with no 4K release |
 | `ALLOW_DISC_IMAGES` | `0` | `1` = also accept DVD images (`DVDr`, `DVD5/9`, `VIDEO_TS`, `ISO`). Off by default because Plex cannot play a disc image — unlike quality this has **no** fallback, so an unplayable-only title waits on its AutoSearch instead. `DVDRip` is a re-encode and is always allowed |
 | `KIDS_ROUTING` | `1` | route kids titles to `kids.movies` / `kids.series` (needs a metadata source below; `0` disables); kids movies prefer Swedish/Nordic releases when available |
 | `TMDB_API_KEY` | — | metadata source for kids routing — a free TMDB API key |

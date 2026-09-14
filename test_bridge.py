@@ -746,6 +746,64 @@ class TestDiscImageRejection(unittest.TestCase):
                                 f"{tok!r} is short and unanchored")
 
 
+class TestMovieQualityLadder(unittest.TestCase):
+    """2160p is wanted for grown-up films only: series %[inc] monitors bake the
+    quality into a literal match string, so a 4K preference there goes dead on
+    every show with no 4K release."""
+
+    def setUp(self):
+        for k in ("QUALITY", "QUALITY_MOVIES"):
+            os.environ.pop(k, None)
+        self.addCleanup(lambda: [os.environ.pop(k, None)
+                                 for k in ("QUALITY", "QUALITY_MOVIES")])
+
+    def _res(self, path, size=20 * 1024**3):
+        return {"path": path, "size": size, "users": {"count": 5},
+                "type": {"id": "directory"}}
+
+    def test_movies_use_the_4k_ladder(self):
+        os.environ["QUALITY"] = "1080p"
+        os.environ["QUALITY_MOVIES"] = "2160p,1080p"
+        self.assertEqual(webhook_server._prefs(kind="movie").require_quality,
+                         ["2160p", "1080p"])
+
+    def test_series_and_kids_movies_stay_on_quality(self):
+        os.environ["QUALITY"] = "1080p"
+        os.environ["QUALITY_MOVIES"] = "2160p,1080p"
+        self.assertEqual(webhook_server._prefs(kind="series").require_quality, ["1080p"])
+        self.assertEqual(
+            webhook_server._prefs(kind="movie", kids=True).require_quality, ["1080p"])
+
+    def test_ladder_prefers_2160p_when_present(self):
+        res = [self._res("/m/Dune.2021.1080p.WEB.h264-GRP/"),
+               self._res("/m/Dune.2021.2160p.WEB.h264-GRP/")]
+        best = ranker.rank(res, "Dune", 2021,
+                           ranker.Prefs(require_quality=["2160p", "1080p"]))
+        self.assertEqual(len(best), 1)
+        self.assertIn("2160p", best[0].release)
+
+    def test_ladder_falls_back_to_1080p_not_720p(self):
+        """The point of the ladder: no 4K must land on 1080p, never a 720p."""
+        res = [self._res("/m/Dune.2021.720p.WEB.h264-GRP/"),
+               self._res("/m/Dune.2021.1080p.WEB.h264-GRP/")]
+        best = ranker.rank(res, "Dune", 2021,
+                           ranker.Prefs(require_quality=["2160p", "1080p"]))
+        self.assertEqual(len(best), 1)
+        self.assertIn("1080p", best[0].release)
+
+    def test_untagged_release_still_survives(self):
+        res = [self._res("/m/Jojos.Bizarre.Adventure.S01.Phantom.Blood/")]
+        self.assertEqual(
+            len(ranker.rank(res, "Jojos Bizarre Adventure", None,
+                            ranker.Prefs(require_quality=["2160p", "1080p"]))), 1)
+
+    def test_autosearch_uses_the_fallback_tier(self):
+        """A 2160p-hardcoded AutoSearch would never fire for a 1080p-only film."""
+        self.assertEqual(
+            core._autosearch_quality(ranker.Prefs(require_quality=["2160p", "1080p"])),
+            "1080p")
+
+
 class TestRequestedSeasons(unittest.TestCase):
     def _p(self, value):
         return {"extra": [{"name": "Requested Seasons", "value": value}]}

@@ -203,6 +203,17 @@ def _autosearch_min_size(prefs: Prefs, kind: str, season: int | None) -> int:
     return prefs.min_size
 
 
+def _autosearch_quality(prefs: Prefs) -> str:
+    """The safety-net quality for a server-side AutoSearch item.
+
+    The ranker can walk a preference ladder because it sees every result at
+    once; an AutoSearch is a single literal match string with no fallback. So
+    bake the LAST tier: a 'prefer 2160p' item that hard-matched 2160p would
+    never fire for a title only ever shared in 1080p.
+    """
+    return prefs.require_quality[-1] if prefs.require_quality else ""
+
+
 def hybrid_grab(client: FulDCClient, title: str, year: int | None, *,
                 kind: str = "movie", series: str | None = None,
                 season: int | None = None, prefs: Prefs | None = None,
@@ -236,7 +247,7 @@ def hybrid_grab(client: FulDCClient, title: str, year: int | None, *,
     # server-side AutoSearch can't reuse the ranker's quality filter).
     matcher = autosearch_matcher(title, year, kind, season)
     if prefs.require_quality:
-        matcher = f"{matcher} {prefs.require_quality[0]}"
+        matcher = f"{matcher} {_autosearch_quality(prefs)}"
     # For an ended-show SEASON, match a PACK not a single episode: partial
     # matching treats "S03" as a substring of "S03E02", so use a regex matcher
     # requiring the season token to be followed by a non-episode char (and the
@@ -245,7 +256,7 @@ def hybrid_grab(client: FulDCClient, title: str, year: int | None, *,
     if kind == "series" and season:
         looks = [f"(?=.*[Ss]{season:02d}(?:[^0-9Ee]|$))"]
         if prefs.require_quality:
-            looks.append(f"(?=.*{re.escape(prefs.require_quality[0])})")
+            looks.append(f"(?=.*{re.escape(_autosearch_quality(prefs))})")
         matcher_type, matcher_string = "regex", "(?i)" + "".join(looks) + ".*"
     # Give the server the same size floor the ranker applies to live results —
     # otherwise AutoSearch happily grabs a 40 MB "sample" that rank() would

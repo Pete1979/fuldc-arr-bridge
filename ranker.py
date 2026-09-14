@@ -284,14 +284,16 @@ def rank(results: list[dict], title: str, year: int | None, prefs: Prefs,
         cands = [c for c in cands if not is_disc_image(c.release)]
     if prefs.require_quality:
         want = [q.lower() for q in prefs.require_quality]
-        # Quality is a PREFERENCE, not a hard requirement: keep the preferred
-        # quality when at least one result has it (so a 1080p is never passed
-        # over for a 720p), but fall back to whatever is available when none
-        # match — anime/complete-series packs often carry no quality tag at all.
-        preferred = [c for c in cands
-                     if any(q in c.quality_haystack() for q in want)]
-        if preferred:
-            cands = preferred
+        # Quality is a PREFERENCE LADDER, not a hard requirement: take the best
+        # tier that actually has results ("2160p,1080p" -> 4K when it exists,
+        # else 1080p), and when nothing matches keep everything rather than
+        # returning nothing — anime/complete-series packs often carry no
+        # quality tag at all.
+        for q in want:
+            tier = [c for c in cands if q in c.quality_haystack()]
+            if tier:
+                cands = tier
+                break
     # Tie-break deliberately rather than keeping arbitrary API order: more
     # sources first, then the larger file (usually the better encode).
     cands.sort(key=lambda c: (c.score,

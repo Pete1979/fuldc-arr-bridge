@@ -93,15 +93,20 @@ def requested_seasons(payload: dict) -> list[int]:
 KIDS_PREFERRED_LANG = ["swedish", "nordic", "sv", "multi"]
 
 
-def _prefs(*, kids=False) -> Prefs:
+def _prefs(*, kind: str = "movie", kids: bool = False) -> Prefs:
     p = Prefs()
-    q = os.environ.get("QUALITY", "").strip().lower()
-    if q:
-        p.require_quality = [q]
-        if q not in p.prefer_quality:
-            p.prefer_quality = [q] + p.prefer_quality
-    if kids:
+    is_movie = kind == "movie"
+    if is_movie and kids:
         p.prefer_lang = KIDS_PREFERRED_LANG.copy()
+    # QUALITY_MOVIES applies to grown-up films only. Series keep QUALITY so
+    # their %[inc] monitors — which bake the quality into a literal match
+    # string with no fallback — cannot go dead on a show with no 4K release.
+    q = os.environ.get("QUALITY_MOVIES", "").strip().lower() if (is_movie and not kids) else ""
+    q = q or os.environ.get("QUALITY", "").strip().lower()
+    if q:
+        p.require_quality = [x.strip() for x in q.split(",") if x.strip()]
+        p.prefer_quality = p.require_quality + [x for x in p.prefer_quality
+                                                if x not in p.require_quality]
     if os.environ.get("ALLOW_DISC_IMAGES", "0") == "1":
         p.allow_disc_images = True
     return p
@@ -129,7 +134,7 @@ def _grab(title, year, *, kind, season=None, movies_dir=None, series_dir=None,
     try:
         c = client()
         res = hybrid_grab(c, title, year, kind=kind, season=season,
-                          prefs=_prefs(kids=kids and kind == "movie"),
+                          prefs=_prefs(kind=kind, kids=kids),
                           dc_root=os.environ.get("DC_ROOT", "S:\\dc"),
                           movies_dir=movies_dir, series_dir=series_dir,
                           complete_fallback=single_season,
@@ -145,7 +150,7 @@ def _grab_season(title, season, *, series_dir=None, year=None):
     print(f"[grab] {title!r} series S{season:02d}", flush=True)
     try:
         c = client()
-        res = grab_tv_season(c, title, season, year=year, prefs=_prefs(),
+        res = grab_tv_season(c, title, season, year=year, prefs=_prefs(kind="series"),
                              dc_root=os.environ.get("DC_ROOT", "S:\\dc"),
                              movies_dir=os.environ.get("MOVIES_DIR"),
                              series_dir=series_dir,
