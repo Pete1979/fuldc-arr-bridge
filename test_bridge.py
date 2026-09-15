@@ -804,6 +804,42 @@ class TestMovieQualityLadder(unittest.TestCase):
             "1080p")
 
 
+class TestMovieYearMatch(unittest.TestCase):
+    """A movie grab must not accept a different year's film. The hub search for
+    'Resident Evil 2026' finds nothing, falls back to the year-less query, and
+    returns the whole franchise -- 'Resident.Evil.The.Final.Chapter.2016' scores
+    title 2/2 and outruns the -20 year penalty on quality + seeder bonuses."""
+
+    def test_wrong_year_sequel_is_rejected(self):
+        self.assertFalse(ranker.matches_year(
+            "Resident.Evil.The.Final.Chapter.2016.2160p.UHD.BluRay.x265-EMERALD", 2026))
+
+    def test_requested_year_is_kept(self):
+        self.assertTrue(ranker.matches_year("Resident.Evil.2026.1080p.WEB.h264-GRP", 2026))
+
+    def test_off_by_one_is_tolerated(self):
+        """TMDB's year and the scene's often differ by one on limited releases."""
+        self.assertTrue(ranker.matches_year("Movie.Name.2025.1080p.WEB-GRP", 2026))
+
+    def test_title_containing_a_year_survives(self):
+        self.assertTrue(ranker.matches_year("Blade.Runner.2049.2017.1080p.BluRay-GRP", 2017))
+
+    def test_untagged_release_is_allowed(self):
+        self.assertTrue(ranker.matches_year("Some.Obscure.Film.1080p.WEB-GRP", 2026))
+
+    def test_2160p_token_is_not_read_as_a_year(self):
+        self.assertEqual(ranker.result_years("Movie.2026.2160p.UHD-GRP"), {2026})
+
+    def test_end_to_end_the_2016_film_cannot_win(self):
+        res = [{"path": "/movies/Resident.Evil.The.Final.Chapter.2016.2160p.UHD.BluRay.x265-EMERALD/",
+                "size": 14 * 1024**3, "users": {"count": 15},
+                "type": {"id": "directory"}}]
+        prefs = ranker.Prefs(require_quality=["2160p", "1080p"])
+        cands = ranker.rank(res, "Resident Evil", 2026, prefs)
+        self.assertTrue(cands, "ranker still scores it")
+        self.assertEqual([c for c in cands if ranker.matches_year(c.release, 2026)], [])
+
+
 class TestRequestedSeasons(unittest.TestCase):
     def _p(self, value):
         return {"extra": [{"name": "Requested Seasons", "value": value}]}

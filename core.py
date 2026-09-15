@@ -14,7 +14,8 @@ from contextlib import contextmanager
 
 from fuldc_client import PRIO_HIGH, PRIO_LOW, FulDCClient
 from ranker import (Prefs, rank, search_queries, strip_leading_article,
-                    scene_title, scene_search, matches_season, SEASON_EP_RE)
+                    scene_title, scene_search, matches_season, matches_year,
+                    SEASON_EP_RE)
 
 # Excluded words for server-side AutoSearch.
 #
@@ -232,6 +233,12 @@ def hybrid_grab(client: FulDCClient, title: str, year: int | None, *,
             # search for 'Show S02' can loosely return the 'Show S01' pack)
             if season:
                 cands = [c for c in cands if matches_season(c.release, season)]
+            # ...and a movie grab must not accept a different year's film: the
+            # year-less fallback query returns the whole franchise, where every
+            # title token matches. Series are exempt -- a show's season packs
+            # carry the season's air year, not the show's first-air year.
+            if kind == "movie" and year:
+                cands = [c for c in cands if matches_year(c.release, year)]
             if cands:
                 best = cands[0]
                 dl_target, dl_name = _download_placement(

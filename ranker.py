@@ -33,6 +33,28 @@ def matches_season(name: str, season: int) -> bool:
     rs = result_seasons(name)
     return (not rs) or (season in rs)
 
+
+def result_years(name: str) -> set[int]:
+    """Every 19xx/20xx token in a release name."""
+    return {int(m) for m in YEAR_RE.findall(name or "")}
+
+
+def matches_year(name: str, year: int, tolerance: int = 1) -> bool:
+    """False when the release is clearly a DIFFERENT film than the one requested.
+
+    The movie twin of matches_season. A hub search for 'Resident Evil 2026'
+    finds nothing, falls back to the year-less query, and returns the whole
+    franchise — every title token of 'Resident Evil' matches
+    'Resident.Evil.The.Final.Chapter.2016', so the -20 year penalty is easily
+    outscored by quality and seeder bonuses.
+
+    Any year token within `tolerance` is accepted, which covers both the usual
+    festival/limited-release off-by-one between TMDB and scene naming and a
+    title that contains a year of its own ('Blade.Runner.2049.2017'). A release
+    with no year at all is allowed, since it cannot be disproved."""
+    ys = result_years(name)
+    return (not ys) or any(abs(y - year) <= tolerance for y in ys)
+
 QUALITY_ONLY = {"1080p", "720p", "480p", "2160p", "4k", "uhd", "1080", "720", "2160"}
 CODEC_TOKENS = {"x264", "x265", "h264", "h265", "hevc", "avc", "xvid"}
 LANG_TOKENS = {"swesub", "swedish", "nordic", "multi", "sv", "en"}
