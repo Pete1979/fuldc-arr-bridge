@@ -840,6 +840,52 @@ class TestMovieYearMatch(unittest.TestCase):
         self.assertEqual([c for c in cands if ranker.matches_year(c.release, 2026)], [])
 
 
+class TestKidsOverride(unittest.TestCase):
+    """Genres can only guess at an audience, so KIDS_ALLOW/KIDS_DENY pin the
+    handful of titles the genre tags get wrong."""
+
+    SKELETON = {"id": 202879, "name": "Star Wars: Skeleton Crew",
+                "genres": [{"name": "Family"}], "status": "Returning Series"}
+    TRANSFORMERS = {"id": 79501, "name": "Transformers: Cyberverse",
+                    "genres": [{"name": "Animation"}], "status": "Ended"}
+
+    def setUp(self):
+        for k in ("KIDS_ALLOW", "KIDS_DENY"):
+            os.environ.pop(k, None)
+        self.addCleanup(lambda: [os.environ.pop(k, None)
+                                 for k in ("KIDS_ALLOW", "KIDS_DENY")])
+
+    def test_genres_decide_when_no_override(self):
+        self.assertTrue(metadata._flags(self.SKELETON, "tv")[0])
+        self.assertFalse(metadata._flags(self.TRANSFORMERS, "tv")[0])
+
+    def test_deny_by_tmdb_id(self):
+        os.environ["KIDS_DENY"] = "202879"
+        self.assertFalse(metadata._flags(self.SKELETON, "tv")[0])
+
+    def test_deny_by_title_is_case_insensitive(self):
+        os.environ["KIDS_DENY"] = "star wars: skeleton crew"
+        self.assertFalse(metadata._flags(self.SKELETON, "tv")[0])
+
+    def test_allow_promotes_a_show_with_no_kids_genre(self):
+        os.environ["KIDS_ALLOW"] = "79501"
+        self.assertTrue(metadata._flags(self.TRANSFORMERS, "tv")[0])
+
+    def test_deny_wins_over_allow(self):
+        os.environ["KIDS_ALLOW"] = "202879"
+        os.environ["KIDS_DENY"] = "202879"
+        self.assertFalse(metadata._flags(self.SKELETON, "tv")[0])
+
+    def test_override_does_not_disturb_ended(self):
+        os.environ["KIDS_ALLOW"] = "79501"
+        self.assertTrue(metadata._flags(self.TRANSFORMERS, "tv")[1])
+
+    def test_unrelated_titles_are_untouched(self):
+        os.environ["KIDS_DENY"] = "202879"
+        bluey = {"id": 82728, "name": "Bluey", "genres": [{"name": "Kids"}]}
+        self.assertTrue(metadata._flags(bluey, "tv")[0])
+
+
 class TestRequestedSeasons(unittest.TestCase):
     def _p(self, value):
         return {"extra": [{"name": "Requested Seasons", "value": value}]}

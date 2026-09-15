@@ -98,6 +98,7 @@ Then request something → approve it → watch `docker compose logs -f`.
 | `SEERR_URL` / `SEERR_API_KEY` | — | alternative metadata source: reuse your Seerr/Jellyseerr/Overseerr |
 | `KIDS_MOVIES_DIR` / `KIDS_SERIES_DIR` | *(from DC_ROOT)* | override kids folders (full Windows paths) |
 | `KIDS_GENRES` | `Kids,Family` | genres that mark a title as kids (Animation alone is **not** kids) |
+| `KIDS_ALLOW` / `KIDS_DENY` | *(empty)* | comma-separated TMDB ids or titles that override the genre guess (`KIDS_DENY` wins). Genres only approximate an audience: a show can be tagged `Family` but watched by adults, or be a children's cartoon carrying no `Kids` genre at all |
 | `SEASON_CHECK_HOURS` | `0` | auto new-season detection: every N hours, add a `%[inc]` monitor for a newly-aired season of a show you follow — live `%[inc]` monitors **and** your Seerr TV requests (so pack-grabbed shows are covered). Aired seasons = TMDB ∪ TVmaze (keyless, covers TMDB's lag on continuing shows). Needs a metadata source; `0` = off |
 | `SEASON_NOTIFY_WEBHOOK` | – | optional URL to POST a `{event,show,season,mode,target}` ping to when a new season is detected (Discord/ntfy/HA/…) |
 | `MONITOR_LIBRARY` | `0` | `1` = also follow every series in your media-server library (via `MEDIASERVER`), not just Seerr requests — so a show you own but never re-requested still gets new seasons. Falls back to Seerr requests + monitors if no supported media server is set |

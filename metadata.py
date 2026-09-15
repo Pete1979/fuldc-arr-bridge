@@ -71,9 +71,34 @@ def _kids_genre_set() -> set[str]:
     return {g.strip().lower() for g in raw.split(",") if g.strip()}
 
 
+def _override_set(var: str) -> set[str]:
+    return {x.strip().lower() for x in os.environ.get(var, "").split(",") if x.strip()}
+
+
+def _kids_override(d: dict) -> bool | None:
+    """KIDS_DENY / KIDS_ALLOW verdict for this title, or None to use genres.
+
+    Genres can only ever be a guess at an audience: 'Skeleton Crew' is tagged
+    Family but is watched by adults, and a toy-franchise cartoon carries no
+    Kids genre at all. Entries are TMDB ids (exact) or titles (case-insensitive),
+    and DENY wins over ALLOW so one list can safely blanket the other.
+    """
+    keys = {str(k).strip().lower()
+            for k in (d.get("id"), d.get("name"), d.get("title"))
+            if str(k or "").strip()}
+    if keys & _override_set("KIDS_DENY"):
+        return False
+    if keys & _override_set("KIDS_ALLOW"):
+        return True
+    return None
+
+
 def _flags(d: dict, media_type: str) -> tuple[bool, bool]:
     genres = [g.get("name", "") for g in d.get("genres", [])]
     kids = any(name.lower() in _kids_genre_set() for name in genres)
+    override = _kids_override(d)
+    if override is not None:
+        kids = override
     ended = (media_type == "tv"
              and (d.get("status") or "").strip().lower() in ENDED_STATUSES)
     return kids, ended
