@@ -46,8 +46,10 @@ BAD_SOURCE = " ".join(
 # file_type back to "any" on its own save cycle, so this excluded-token list is
 # the durable backstop: a loose part's path contains ".r0".."r9"/".rar"; a
 # release DIRECTORY never does (small .nfo/.sfv/.jpg parts are already below the
-# size floor). Kept out of BAD_SOURCE so it doesn't trip the short-token guard.
-LOOSE_PART = " ".join([f".r{d}" for d in range(10)] + [".rar"])
+# size floor). Bare video files (.mkv/.mp4/.avi) are excluded the same way: the
+# share skiplist rejects them, so they would never be re-shared.
+# Kept out of BAD_SOURCE so it doesn't trip the short-token guard.
+LOOSE_PART = " ".join([f".r{d}" for d in range(10)] + [".rar", ".mkv", ".mp4", ".avi"])
 
 # A DVD image (VIDEO_TS/ISO) is unplayable in Plex, so the server-side
 # AutoSearch must not grab one either — otherwise rejecting it in the ranker
@@ -228,7 +230,8 @@ def hybrid_grab(client: FulDCClient, title: str, year: int | None, *,
     with searched(client, title, year, wait=wait, log=log,
                   kind=kind, season=season, complete=complete_fallback) as (iid, results):
         if results:
-            cands = rank(results, title, year, prefs, kind=kind)
+            cands = _release_dirs(rank(results, title, year, prefs, kind=kind,
+                                       include_dupes=True))
             # a season grab must not accept a different season's pack (a hub
             # search for 'Show S02' can loosely return the 'Show S01' pack)
             if season:
@@ -239,6 +242,9 @@ def hybrid_grab(client: FulDCClient, title: str, year: int | None, *,
             # carry the season's air year, not the show's first-air year.
             if kind == "movie" and year:
                 cands = [c for c in cands if matches_year(c.release, year)]
+            if cands and _is_owned(cands[0].result):
+                return _owned(cands[0], target, season, log)
+            cands = [c for c in cands if not c.result.get("dupe")]
             if cands:
                 best = cands[0]
                 dl_target, dl_name = _download_placement(
@@ -303,8 +309,12 @@ def grab_tv_season(client: FulDCClient, show: str, season: int, *,
     with searched(client, show, None, wait=wait, log=log,
                   kind="series", season=season) as (iid, results):
         if results:
-            cands = rank(results, show, None, prefs, kind="series")
+            cands = _release_dirs(rank(results, show, None, prefs, kind="series",
+                                       include_dupes=True))
             cands = [c for c in cands if matches_season(c.release, season)]
+            if cands and _is_owned(cands[0].result):
+                return _owned(cands[0], target, season, log)
+            cands = [c for c in cands if not c.result.get("dupe")]
             if cands:
                 best = cands[0]
                 dl_target, dl_name = _download_placement(
@@ -358,6 +368,21 @@ def _is_owned(result: dict) -> bool:
     """The result is already on the share or in the download queue (search-result
     `dupe` flag), so it must not be re-grabbed."""
     return str(((result.get("dupe") or {}).get("id")) or "").startswith(("share", "queue"))
+
+
+def _release_dirs(cands: list) -> list:
+    """Drop loose FILE results. Hub releases are directories; a file hit is either
+    one .rNN volume of a RAR set or a bare .mkv/.mp4, which the share skiplist
+    rejects, so it would download into the library root and never be re-shared."""
+    return [c for c in cands if (c.result.get("type") or {}).get("id") != "file"]
+
+
+def _owned(best, target: str, season: int | None, log) -> dict:
+    """The best matching release is already shared/queued: the request is
+    fulfilled, so don't fall through to a worse copy (or an AutoSearch)."""
+    log(f"# already have {best.release!r} ({(best.result.get('dupe') or {}).get('id')})")
+    return {"mode": "owned", "release": best.release, "score": best.score,
+            "target": target, "season": season}
 
 
 def backfill_episodes(client: FulDCClient, show: str, season: int,

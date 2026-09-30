@@ -114,6 +114,9 @@ def do_grab(a) -> None:
         print(f"# not shared right now → created AutoSearch item id={res['autosearch_id']} "
               f"matcher={res['matcher']!r} target={res['target']}")
         return
+    if res["mode"] == "owned":
+        print(f"# already have {res['release']} — nothing to grab")
+        return
     bundle_id = res["bundle_id"]
     print(f"# grabbed {res['release']} → bundle {bundle_id} target {res['target']}")
     if bundle_id is None:

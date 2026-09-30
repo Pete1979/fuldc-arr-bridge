@@ -359,8 +359,11 @@ def _reassert_guards(client: FulDCClient, log) -> int:
         if str(it.get("file_type")) not in ("directory", "7"):
             patch["file_type"] = "directory"
         exc = it.get("excluded_string") or ""
-        if ".r0" not in exc:
-            patch["excluded_string"] = f"{exc} {LOOSE_PART}".strip() if exc else AUTOSEARCH_EXCLUDE
+        missing = [t for t in LOOSE_PART.split() if t not in exc.split()]
+        if not exc:
+            patch["excluded_string"] = AUTOSEARCH_EXCLUDE
+        elif missing:
+            patch["excluded_string"] = f"{exc} {' '.join(missing)}"
         if patch:
             client.update_autosearch(it["id"], patch)
             fixed += 1

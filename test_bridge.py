@@ -416,6 +416,47 @@ class TestYearFolder(unittest.TestCase):
         self.assertEqual(got, "S:\\dc\\series\\Silo\\S02\\")
 
 
+class TestAlreadyOwnedAndLooseFiles(unittest.TestCase):
+    """The Odyssey (2026): the Kitsune WEB-DL was already on the share (dupe), so
+    rank() dropped it and the bridge grabbed the next hit — a loose YTS .mp4 that
+    the share skiplist rejects."""
+
+    KITSUNE = {"id": "K", "type": {"id": "directory"}, "size": 4_670_000_000,
+               "path": "/x264_web/The.Odyssey.2026.1080p.AMZN.WEB-DL.DDP5.1.H.264-Kitsune/",
+               "users": {"count": 16}, "slots": {"free": 5},
+               "dupe": {"id": "share_full", "paths": ["S:\\dc\\movies\\x\\"]}}
+    YTS = {"id": "Y", "type": {"id": "file"}, "size": 1_702_305_907,
+           "path": "/Movies/The Odyssey (2026)/The.Odyssey.2026.1080p.WEBRip.x264.AAC5.1-[YTS.GG].mp4",
+           "users": {"count": 1}, "slots": {"free": 1}}
+
+    def _grab(self, results):
+        c = FakeClient({("GET", "/search/1/results/0/200"): (200, results)})
+        res = core.hybrid_grab(c, "The Odyssey", 2026, wait=0, log=lambda m: None)
+        return c, res
+
+    def test_owned_best_release_is_not_regrabbed(self):
+        c, res = self._grab([self.KITSUNE, self.YTS])
+        self.assertEqual(res["mode"], "owned")
+        self.assertFalse([p for m, p, _ in c.calls if p.endswith("/download")])
+        self.assertFalse([p for m, p, _ in c.calls if p == "/auto_search/items"],
+                         "an owned title must not leave an AutoSearch behind")
+        c.assert_no_leak(self)
+
+    def test_loose_file_is_never_downloaded(self):
+        c, res = self._grab([self.YTS])
+        self.assertEqual(res["mode"], "autosearch")
+        self.assertFalse([p for m, p, _ in c.calls if p.endswith("/download")])
+
+    def test_owned_season_pack_skips_monitor(self):
+        pack = {"id": "P", "type": {"id": "directory"}, "size": 20 * 1024**3,
+                "path": "/tv/Severance.S02.1080p.WEB.h264-GRP/",
+                "users": {"count": 4}, "dupe": {"id": "share_full"}}
+        c = FakeClient({("GET", "/search/1/results/0/200"): (200, [pack])})
+        res = core.grab_tv_season(c, "Severance", 2, wait=0, log=lambda m: None)
+        self.assertEqual(res["mode"], "owned")
+        self.assertFalse([p for m, p, _ in c.calls if p == "/auto_search/items"])
+
+
 class TestSeasonPackMatcher(unittest.TestCase):
     """An ended-show season AutoSearch must match a PACK, not a single episode
     (partial matching treats S03 as a substring of S03E02)."""
@@ -1364,7 +1405,7 @@ class TestLoosePartExclude(unittest.TestCase):
         c = FakeClient()
         core.monitor_tv_season(c, "Silo", 3, log=lambda m: None)
         exc = c.body_for("POST", "/auto_search/items").get("excluded_string", "")
-        for tok in (".r0", ".r4", ".r9", ".rar"):
+        for tok in (".r0", ".r4", ".r9", ".rar", ".mkv", ".mp4"):
             self.assertIn(tok, exc)
         # still keeps the real bad-source excludes
         self.assertIn("camrip", exc)
@@ -1392,8 +1433,19 @@ class TestReassertGuards(unittest.TestCase):
     def test_noop_when_already_pinned(self):
         import season_monitor
         c = FakeClient({("GET", "/auto_search/items"):
-                        (200, [self._item(file_type="7", excluded_string="camrip .r0 .rar")])})
+                        (200, [self._item(file_type="7",
+                                          excluded_string=f"camrip {core.LOOSE_PART}")])})
         self.assertEqual(season_monitor._reassert_guards(c, lambda m: None), 0)
+
+    def test_adds_missing_video_excludes_to_old_monitors(self):
+        import season_monitor
+        old = "camrip " + " ".join(f".r{d}" for d in range(10)) + " .rar"
+        c = FakeClient({("GET", "/auto_search/items"):
+                        (200, [self._item(file_type="7", excluded_string=old)])})
+        self.assertEqual(season_monitor._reassert_guards(c, lambda m: None), 1)
+        exc = c.body_for("PATCH", "/auto_search/items/7")["excluded_string"]
+        self.assertTrue(exc.startswith(old))
+        self.assertIn(".mkv", exc.split())
 
     def test_skips_disabled_items(self):
         import season_monitor
