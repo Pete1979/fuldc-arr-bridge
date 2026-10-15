@@ -84,6 +84,21 @@ class FulDCClient:
             raise FulDCError(f"system_info http {st}: {data}")
         return data
 
+    def _get_ok(self, path: str) -> Any:
+        st, data = self._call("GET", path)
+        if st != 200:
+            raise FulDCError(f"GET {path} http {st}: {data}")
+        return data
+
+    def hubs(self) -> list[dict]:
+        return self._get_ok("/hubs") or []
+
+    def share_stats(self) -> dict:
+        return self._get_ok("/share/stats") or {}
+
+    def transfer_stats(self) -> dict:
+        return self._get_ok("/transfers/stats") or {}
+
     def default_download_dir(self) -> str:
         st, data = self._call("POST", "/settings/get", {"keys": ["download_directory"]})
         return (data or {}).get("download_directory", "") if st == 200 else ""

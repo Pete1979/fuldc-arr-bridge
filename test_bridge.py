@@ -26,6 +26,7 @@ import core
 import fuldc_client
 import httputil
 import metadata
+import metrics
 import qbit
 import ranker
 import store
@@ -1782,6 +1783,63 @@ class TestSeasonMatch(unittest.TestCase):
         self.assertEqual(res["mode"], "monitor")   # rejected S01, fell to %[inc]
         self.assertFalse(any("/download" in p for _, p, _ in c.calls),
                          "must not download the wrong-season pack")
+
+
+class TestMetrics(unittest.TestCase):
+    def setUp(self):
+        metrics._cache = (0.0, "")
+
+    def _ok(self):
+        return FakeClient({
+            ("GET", "/system/system_info"): (200, {"client_version": "FulDC++ 1.10",
+                                                   "client_started": 1792074030}),
+            ("GET", "/hubs"): (200, [
+                {"id": 1, "connect_state": {"id": "connected"}, "identity": {"name": "KPMH"}},
+                {"id": 2, "connect_state": {"id": "disconnected"}, "identity": {"name": ""},
+                 "hub_url": "adcs://hub.example:1234/"}]),
+            ("GET", "/share/stats"): (200, {"total_file_count": 163566,
+                                           "total_directory_count": 7371}),
+            ("GET", "/transfers/stats"): (200, {"speed_down": 100, "queued_bytes": 5}),
+            ("GET", "/queue/bundles/0/500"): (200, [
+                {"status": {"id": "shared"}, "size": 10, "downloaded_bytes": 10,
+                 "sources": {"online": 0}},
+                {"status": {"id": "queued"}, "size": 10, "downloaded_bytes": 2,
+                 "sources": {"online": 0}},
+                {"status": {"id": "download_error"}, "size": 10, "downloaded_bytes": 2,
+                 "sources": {"online": 3}}]),
+        })
+
+    def test_healthy_client(self):
+        text = metrics.collect(self._ok())
+        for line in ("fuldc_up 1", "fuldc_hubs_total 2", "fuldc_hubs_connected 1",
+                     'fuldc_hub_connected{hub="KPMH"} 1',
+                     'fuldc_hub_connected{hub="hub.example"} 0',
+                     "fuldc_share_files 163566", "fuldc_bundles_failed 1",
+                     "fuldc_bundles_no_sources 1",
+                     'fuldc_collect_error{section="queue"} 0'):
+            self.assertIn(line, text.splitlines())
+
+    def test_down_client_reports_zero(self):
+        class Dead(FakeClient):
+            def _call(self, method, path, body=None):
+                raise FulDCError("cannot reach")
+        self.assertEqual(metrics.collect(Dead()).splitlines()[-1], "fuldc_up 0")
+
+    def test_one_broken_section_does_not_hide_others(self):
+        c = self._ok()
+        c.responses[("GET", "/hubs")] = (500, {"message": "boom"})
+        text = metrics.collect(c)
+        self.assertIn('fuldc_collect_error{section="hubs"} 1', text)
+        self.assertIn("fuldc_share_files 163566", text)
+
+    def test_render_is_cached(self):
+        n = []
+        def factory():
+            n.append(1)
+            return self._ok()
+        metrics.render(factory)
+        metrics.render(factory)
+        self.assertEqual(len(n), 1)
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import metrics
 from fuldc_client import FulDCClient
 from httputil import REQUEST_TIMEOUT_SECONDS, body_too_large, read_body, secure_equal
 from ranker import Prefs, fold
@@ -286,6 +287,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/health":
             ok, detail = _fuldc_reachable()
             return self._send(200 if ok else 503, detail.encode())
+        if path == "/metrics":
+            body = metrics.render(client).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         # "/" stays an unconditional 200: it is the liveness answer, and a
         # liveness probe that depends on FulDC++ would restart this process
         # every time the client is restarted.
