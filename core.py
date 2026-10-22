@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from fuldc_client import PRIO_HIGH, PRIO_LOW, FulDCClient
 from ranker import (Prefs, rank, search_queries, strip_leading_article,
                     scene_title, scene_search, matches_season, matches_year,
-                    SEASON_EP_RE)
+                    meets_size_floor, SEASON_EP_RE)
 
 # Excluded words for server-side AutoSearch.
 #
@@ -242,6 +242,9 @@ def hybrid_grab(client: FulDCClient, title: str, year: int | None, *,
             # carry the season's air year, not the show's first-air year.
             if kind == "movie" and year:
                 cands = [c for c in cands if matches_year(c.release, year)]
+            # below the size floor = not a video release (album, OST, ebook);
+            # fall through to the AutoSearch, which waits for the real one
+            cands = [c for c in cands if meets_size_floor(c, prefs, kind)]
             if cands and _is_owned(cands[0].result):
                 return _owned(cands[0], target, season, log)
             cands = [c for c in cands if not c.result.get("dupe")]
@@ -311,7 +314,8 @@ def grab_tv_season(client: FulDCClient, show: str, season: int, *,
         if results:
             cands = _release_dirs(rank(results, show, None, prefs, kind="series",
                                        include_dupes=True))
-            cands = [c for c in cands if matches_season(c.release, season)]
+            cands = [c for c in cands if matches_season(c.release, season)
+                     and meets_size_floor(c, prefs, "series")]
             if cands and _is_owned(cands[0].result):
                 return _owned(cands[0], target, season, log)
             cands = [c for c in cands if not c.result.get("dupe")]
@@ -412,6 +416,7 @@ def backfill_episodes(client: FulDCClient, show: str, season: int,
                 continue
             cands = [c for c in rank(results, show, None, prefs, kind="series")
                      if matches_season(c.release, season)
+                     and meets_size_floor(c, prefs, "series")
                      and (c.result.get("type") or {}).get("id") == "directory"]
             if not cands:
                 log(f"# [backfill] {show} S{season:02d}E{ep:02d}: no directory result")

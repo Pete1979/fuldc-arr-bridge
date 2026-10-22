@@ -458,6 +458,62 @@ class TestAlreadyOwnedAndLooseFiles(unittest.TestCase):
         self.assertFalse([p for m, p, _ in c.calls if p == "/auto_search/items"])
 
 
+class TestSizeFloorIsHardGate(unittest.TestCase):
+    """Whalefall (2026): the film was not shared yet, but a same-name MP3 album
+    was. Title 1/1 + exact year outscored the -40 too-small penalty, so the
+    58 MB album was downloaded into movies/ instead of creating an AutoSearch."""
+
+    def _dir(self, rid, path, size, dupe=None):
+        r = {"id": rid, "type": {"id": "directory"}, "size": size, "path": path,
+             "users": {"count": 1}, "slots": {"free": 1}}
+        if dupe:
+            r["dupe"] = {"id": dupe}
+        return r
+
+    def test_album_and_ost_are_not_grabbed(self):
+        results = [
+            self._dir("A", "/Nytt-Mp3/2026/06/Whalefall-Is_It_All_A_Dream-WEB-2026-FiH/", 57_812_238),
+            self._dir("F", "/FLAC/0608/Whalefall-Is_It_All_A_Dream-16BIT-WEB-FLAC-2026-VEXED/", 178_000_000),
+            self._dir("O", "/MP3/1016/Joseph_Trapanese-Whalefall_(Original_Motion_Picture_Soundtrack)"
+                           "-OST-WEB-2026-JADED/", 171_000_000),
+        ]
+        c = FakeClient({("GET", "/search/1/results/0/200"): (200, results)})
+        res = core.hybrid_grab(c, "Whalefall", 2026, wait=0, log=lambda m: None)
+        self.assertEqual(res["mode"], "autosearch")
+        self.assertFalse([p for m, p, _ in c.calls if p.endswith("/download")])
+
+    def test_owned_album_does_not_count_as_owned_movie(self):
+        album = self._dir("A", "/MP3/Whalefall-Is_It_All_A_Dream-WEB-2026-FiH/",
+                          57_812_238, dupe="share_full")
+        c = FakeClient({("GET", "/search/1/results/0/200"): (200, [album])})
+        res = core.hybrid_grab(c, "Whalefall", 2026, wait=0, log=lambda m: None)
+        self.assertEqual(res["mode"], "autosearch")
+
+    def _client(self, results, rid=None):
+        routes = {("GET", "/search/1/results/0/200"): (200, results)}
+        if rid:
+            routes[("POST", f"/search/1/results/{rid}/download")] = (
+                200, {"bundle_info": {"id": 7}})
+        return FakeClient(routes)
+
+    def test_real_film_still_wins_over_album(self):
+        results = [
+            self._dir("A", "/MP3/Whalefall-Is_It_All_A_Dream-WEB-2026-FiH/", 57_812_238),
+            self._dir("M", "/x264/Whalefall.2026.1080p.WEB-DL.DDP5.1.H.264-GRP/", 5 * 1024**3),
+        ]
+        c = self._client(results, "M")
+        res = core.hybrid_grab(c, "Whalefall", 2026, wait=0, log=lambda m: None)
+        self.assertEqual(res["mode"], "download")
+        self.assertEqual(res["release"], "Whalefall.2026.1080p.WEB-DL.DDP5.1.H.264-GRP")
+
+    def test_single_episode_uses_episode_floor(self):
+        ep = self._dir("E", "/tv/Severance.S02E03.1080p.WEB.h264-GRP/", 300 * 1024**2)
+        c = self._client([ep], "E")
+        res = core.hybrid_grab(c, "Severance", None, kind="series", wait=0,
+                               log=lambda m: None)
+        self.assertEqual(res["mode"], "download")
+
+
 class TestSeasonPackMatcher(unittest.TestCase):
     """An ended-show season AutoSearch must match a PACK, not a single episode
     (partial matching treats S03 as a substring of S03E02)."""

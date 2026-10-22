@@ -226,6 +226,23 @@ class Candidate:
         return normalize(" ".join(segs) + " " + self.release)
 
 
+def size_floor(release: str, prefs: Prefs, kind: str = "movie") -> int:
+    """Smallest size a real video release can have: a single TV episode is
+    small, anything else (a movie, a season pack) uses the full floor."""
+    if kind == "series" and SEASON_EP_RE.search(release or ""):
+        return prefs.min_size_episode
+    return prefs.min_size
+
+
+def meets_size_floor(c: Candidate, prefs: Prefs, kind: str = "movie") -> bool:
+    """Hard gate for live grabs. The -40 'too-small' penalty only reorders, so
+    when the hubs share nothing but a same-name album, OST or ebook (title 1/1
+    + exact year = +65) it still came out on top and got downloaded ('Whalefall'
+    2026 grabbed a 58 MB MP3 album). The AutoSearch fallback already enforces
+    this floor server-side; the live path must too."""
+    return (c.result.get("size") or 0) >= size_floor(c.release, prefs, kind)
+
+
 def score_result(result: dict, title: str, year: int | None, prefs: Prefs,
                  kind: str = "movie") -> Candidate:
     path = result.get("path", "") or result.get("name", "")
@@ -270,9 +287,7 @@ def score_result(result: dict, title: str, year: int | None, prefs: Prefs,
     # ("/-x264-Kids/…") would otherwise poison every result
     if any(b in low.split() for b in BAD_TOKENS):
         score -= 60; reasons.append("BAD-source")
-    floor = (prefs.min_size_episode
-             if kind == "series" and SEASON_EP_RE.search(release) else prefs.min_size)
-    if size < floor:
+    if size < size_floor(release, prefs, kind):
         score -= 40; reasons.append("too-small")
     if size > prefs.max_size:
         score -= 20; reasons.append("too-big")
