@@ -10,10 +10,10 @@ Hybrid strategy:
 from __future__ import annotations
 
 import re
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 
 from fuldc_client import PRIO_HIGH, PRIO_LOW, FulDCClient
-from ranker import (Prefs, rank, search_queries, strip_leading_article,
+from ranker import (Prefs, rank, rank_multi, search_queries, strip_leading_article,
                     scene_title, scene_search, matches_season, matches_year,
                     meets_size_floor, SEASON_EP_RE)
 
@@ -187,6 +187,30 @@ def searched(client: FulDCClient, title: str, year: int | None, *,
                 log(f"# warning: could not close search instance {iid}: {e}")
 
 
+@contextmanager
+def searched_ranked(client: FulDCClient, titles: list[str], year: int | None,
+                    prefs: Prefs, *, wait: float = 10.0, log=print,
+                    kind: str = "movie", season: int | None = None,
+                    complete: bool = False):
+    """Search every title (original + display title of a foreign show) and rank
+    all results as one pool. Yields (candidates, instance_of) where
+    instance_of(candidate) is the search instance its result id belongs to —
+    a download must go through the instance that produced the result. All
+    instances stay open until the caller is done, then are closed."""
+    titles = list(dict.fromkeys(t for t in titles if t))
+    groups, owner = [], {}
+    with ExitStack() as stack:
+        for t in titles:
+            iid, results = stack.enter_context(
+                searched(client, t, year, wait=wait, log=log, kind=kind,
+                         season=season, complete=complete))
+            if results:
+                groups.append((t, results))
+                owner.update((id(r), iid) for r in results)
+        cands = rank_multi(groups, year, prefs, include_dupes=True, kind=kind) if groups else []
+        yield cands, (lambda c: owner[id(c.result)])
+
+
 def autosearch_matcher(title: str, year: int | None, kind: str = "movie",
                        season: int | None = None) -> str:
     base = scene_search(strip_leading_article(title))
@@ -222,16 +246,16 @@ def hybrid_grab(client: FulDCClient, title: str, year: int | None, *,
                 season: int | None = None, prefs: Prefs | None = None,
                 dc_root: str = "S:\\dc", movies_dir: str | None = None,
                 series_dir: str | None = None, target: str | None = None,
-                complete_fallback: bool = False,
+                complete_fallback: bool = False, alt_title: str | None = None,
                 wait: float = 10.0, log=print) -> dict:
     prefs = prefs or Prefs()
     target = resolve_target(kind, title, series, dc_root, target, season,
                             movies_dir, series_dir, year)
-    with searched(client, title, year, wait=wait, log=log,
-                  kind=kind, season=season, complete=complete_fallback) as (iid, results):
-        if results:
-            cands = _release_dirs(rank(results, title, year, prefs, kind=kind,
-                                       include_dupes=True))
+    with searched_ranked(client, [title, alt_title], year, prefs, wait=wait, log=log,
+                         kind=kind, season=season,
+                         complete=complete_fallback) as (cands, instance_of):
+        if cands:
+            cands = _release_dirs(cands)
             # a season grab must not accept a different season's pack (a hub
             # search for 'Show S02' can loosely return the 'Show S01' pack)
             if season:
@@ -253,7 +277,7 @@ def hybrid_grab(client: FulDCClient, title: str, year: int | None, *,
                 dl_target, dl_name = _download_placement(
                     kind, title, series, dc_root, season, movies_dir,
                     series_dir, year, best.release, target)
-                info = client.download_result(iid, best.result["id"], dl_target,
+                info = client.download_result(instance_of(best), best.result["id"], dl_target,
                                               name=dl_name)
                 return {"mode": "download", "release": best.release,
                         "score": best.score, "bundle_id": info.get("bundle_id"),
@@ -298,8 +322,8 @@ def grab_tv_season(client: FulDCClient, show: str, season: int, *,
                    year: int | None = None, prefs: Prefs | None = None,
                    dc_root: str = "S:\\dc",
                    movies_dir: str | None = None, series_dir: str | None = None,
-                   quality: str | None = None, wait: float = 10.0,
-                   log=print) -> dict:
+                   quality: str | None = None, alt_title: str | None = None,
+                   wait: float = 10.0, log=print) -> dict:
     """Season request: grab a season pack now if one is shared, otherwise fall
     back to the %[inc] per-episode monitor.
 
@@ -309,11 +333,10 @@ def grab_tv_season(client: FulDCClient, show: str, season: int, *,
     prefs = prefs or Prefs()
     target = resolve_target("series", show, None, dc_root, None, season,
                             movies_dir, series_dir, year)
-    with searched(client, show, None, wait=wait, log=log,
-                  kind="series", season=season) as (iid, results):
-        if results:
-            cands = _release_dirs(rank(results, show, None, prefs, kind="series",
-                                       include_dupes=True))
+    with searched_ranked(client, [show, alt_title], None, prefs, wait=wait, log=log,
+                         kind="series", season=season) as (cands, instance_of):
+        if cands:
+            cands = _release_dirs(cands)
             cands = [c for c in cands if matches_season(c.release, season)
                      and meets_size_floor(c, prefs, "series")]
             if cands and _is_owned(cands[0].result):
@@ -324,7 +347,7 @@ def grab_tv_season(client: FulDCClient, show: str, season: int, *,
                 dl_target, dl_name = _download_placement(
                     "series", show, None, dc_root, season, movies_dir,
                     series_dir, year, best.release, target)
-                info = client.download_result(iid, best.result["id"], dl_target,
+                info = client.download_result(instance_of(best), best.result["id"], dl_target,
                                               name=dl_name)
                 log(f"# season pack {best.release!r} -> {dl_target}")
                 return {"mode": "download", "release": best.release,

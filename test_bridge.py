@@ -646,7 +646,7 @@ class TestSearchInstanceLifetime(unittest.TestCase):
 
     def test_closed_when_ranking_raises(self):
         c = self._client()
-        with unittest.mock.patch("core.rank", side_effect=RuntimeError("bad")):
+        with unittest.mock.patch("core.rank_multi", side_effect=RuntimeError("bad")):
             with self.assertRaises(RuntimeError):
                 core.hybrid_grab(c, "Dune", 2021, wait=0, log=lambda m: None)
         c.assert_no_leak(self)
@@ -1896,6 +1896,54 @@ class TestMetrics(unittest.TestCase):
         metrics.render(factory)
         metrics.render(factory)
         self.assertEqual(len(n), 1)
+
+
+class TestOriginalAndDisplayTitle(unittest.TestCase):
+    """Norsemen (orig. 'Vikingane'): searching only the original title found
+    720p packs from single unreachable users while the display title had
+    multi-source 1080p packs. Both titles must be searched and ranked as one
+    pool, and the download must go through the instance that found the result."""
+
+    VIKINGANE = {"id": "V", "type": {"id": "directory"}, "size": 6_480_000_000,
+                 "path": "/TV-NORWEGiAN/Vikingane/Vikingane.S01.720p.HDTV/",
+                 "users": {"count": 1}, "slots": {"free": 0}}
+    NORSEMEN = {"id": "N", "type": {"id": "directory"}, "size": 9_210_000_000,
+                "path": "/TV/Norsemen.S01.NORDiC.1080p.WEB-DL.DD5.1.x264-DBRETAiL/",
+                "users": {"count": 4}, "slots": {"free": 2}}
+
+    def test_season_grab_takes_display_title_1080p_from_its_own_instance(self):
+        c = FakeClient({
+            ("POST", "/search"): [(200, {"id": 1}), (200, {"id": 2})],
+            ("GET", "/search/1/results/0/200"): (200, [self.VIKINGANE]),
+            ("GET", "/search/2/results/0/200"): (200, [self.NORSEMEN]),
+            ("POST", "/search/2/results/N/download"): (200, {"bundle_info": {"id": 9}}),
+        })
+        res = core.hybrid_grab(c, "Vikingane", 2016, kind="series", season=1,
+                               alt_title="Norsemen",
+                               prefs=ranker.Prefs(require_quality=["1080p"]),
+                               wait=0, log=lambda m: None)
+        self.assertEqual(res["mode"], "download")
+        self.assertEqual(res["release"], "Norsemen.S01.NORDiC.1080p.WEB-DL.DD5.1.x264-DBRETAiL")
+        self.assertEqual(res["bundle_id"], 9)
+        # folder keeps the primary (original) title
+        self.assertEqual(res["target"], "S:\\dc\\series\\Vikingane.2016\\")
+        c.assert_no_leak(self)
+
+    def test_webhook_passes_display_title_as_alt(self):
+        calls = []
+        with unittest.mock.patch("webhook_server.parse",
+                                 return_value=("MEDIA_APPROVED", "tv", "Norsemen", 2016, 64432)), \
+             unittest.mock.patch("webhook_server.request_meta",
+                                 return_value=(False, True, "Vikingane", 3)), \
+             unittest.mock.patch("webhook_server.requested_seasons", return_value=[1]), \
+             unittest.mock.patch("webhook_server._grab",
+                                 side_effect=lambda *a, **k: calls.append((a, k))), \
+             contextlib.redirect_stdout(io.StringIO()):
+            webhook_server._handle({})
+        self.assertEqual(len(calls), 1)
+        (title, _year), kw = calls[0]
+        self.assertEqual(title, "Vikingane")
+        self.assertEqual(kw["alt_title"], "Norsemen")
 
 
 if __name__ == "__main__":

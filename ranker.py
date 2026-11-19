@@ -312,7 +312,19 @@ def score_result(result: dict, title: str, year: int | None, prefs: Prefs,
 
 def rank(results: list[dict], title: str, year: int | None, prefs: Prefs,
          include_dupes: bool = False, kind: str = "movie") -> list[Candidate]:
-    cands = [score_result(r, title, year, prefs, kind) for r in results]
+    return rank_multi([(title, results)], year, prefs, include_dupes, kind)
+
+
+def rank_multi(groups: list[tuple[str, list[dict]]], year: int | None, prefs: Prefs,
+               include_dupes: bool = False, kind: str = "movie") -> list[Candidate]:
+    """Rank results from several title searches as ONE pool.
+
+    Each group is scored against the title it was searched with, but the
+    quality ladder runs over the pool: ranking per title would let a 720p-only
+    original-title search ('Vikingane') fall back to 720p even though the
+    display-title search ('Norsemen') has 1080p packs."""
+    cands = [score_result(r, title, year, prefs, kind)
+             for title, results in groups for r in results]
     if not include_dupes:
         cands = [c for c in cands if not c.result.get("dupe")]
     if not prefs.allow_disc_images:

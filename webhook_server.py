@@ -129,7 +129,7 @@ def _after_download(c: FulDCClient, res: dict, kind: str) -> None:
 
 
 def _grab(title, year, *, kind, season=None, movies_dir=None, series_dir=None,
-          single_season=False, kids=False):
+          single_season=False, kids=False, alt_title=None):
     print(f"[grab] {title!r} ({year}) type={kind}" + (f" S{season:02d}" if season else ""),
           flush=True)
     try:
@@ -138,7 +138,7 @@ def _grab(title, year, *, kind, season=None, movies_dir=None, series_dir=None,
                           prefs=_prefs(kind=kind, kids=kids),
                           dc_root=os.environ.get("DC_ROOT", "S:\\dc"),
                           movies_dir=movies_dir, series_dir=series_dir,
-                          complete_fallback=single_season,
+                          complete_fallback=single_season, alt_title=alt_title,
                           log=lambda m: print(m, flush=True))
         print(f"[done] {res}", flush=True)
         _after_download(c, res, kind)
@@ -146,7 +146,7 @@ def _grab(title, year, *, kind, season=None, movies_dir=None, series_dir=None,
         print(f"[error] {title!r}:\n{traceback.format_exc()}", flush=True)
 
 
-def _grab_season(title, season, *, series_dir=None, year=None):
+def _grab_season(title, season, *, series_dir=None, year=None, alt_title=None):
     q = os.environ.get("QUALITY", "").strip() or None
     print(f"[grab] {title!r} series S{season:02d}", flush=True)
     try:
@@ -154,7 +154,7 @@ def _grab_season(title, season, *, series_dir=None, year=None):
         res = grab_tv_season(c, title, season, year=year, prefs=_prefs(kind="series"),
                              dc_root=os.environ.get("DC_ROOT", "S:\\dc"),
                              movies_dir=os.environ.get("MOVIES_DIR"),
-                             series_dir=series_dir,
+                             series_dir=series_dir, alt_title=alt_title,
                              quality=q, log=lambda m: print(m, flush=True))
         print(f"[done] {res}", flush=True)
         _after_download(c, res, "series")
@@ -192,12 +192,16 @@ def _handle(payload: dict) -> None:
     kids, ended, alt, nseasons = request_meta(tmdb, mtype, log=lambda m: print(m, flush=True))
     if os.environ.get("KIDS_ROUTING", "1") != "1":
         kids = False
-    # DC releases of a foreign film use its original title, but only when that
-    # is Latin-script (Nordic/European). A non-Latin original (CJK, Cyrillic)
+    # DC releases of a foreign film often use its original title, but only when
+    # that is Latin-script (Nordic/European). A non-Latin original (CJK, Cyrillic)
     # can't match ASCII scene names, so keep Seerr's romanized display title.
+    # Search BOTH: a co-production shot in English (Norsemen = 'Vikingane') is
+    # shared mostly under the display title, and the original-title-only hits
+    # were 720p packs from single unreachable users.
+    display = None
     if alt and alt != title and all(ord(c) < 128 for c in fold(alt) if c.isalpha()):
-        print(f"[orig] searching original title {alt!r} (Seerr display: {title!r})", flush=True)
-        title = alt
+        print(f"[orig] searching original title {alt!r} + display title {title!r}", flush=True)
+        title, display = alt, title
     mov_dir, ser_dir = _request_dirs(kids)
     if kids:
         print(f"[kids] routing {title!r} -> kids folders", flush=True)
@@ -211,14 +215,15 @@ def _handle(payload: dict) -> None:
             single = nseasons == 1  # whole series may be shared as one COMPLETE pack
             for season in (seasons or [None]):
                 _grab(title, year, kind="series", season=season,
-                      series_dir=ser_dir, single_season=single)
+                      series_dir=ser_dir, single_season=single, alt_title=display)
         elif seasons:
             for season in seasons:
-                _grab_season(title, season, series_dir=ser_dir, year=year)   # pack now, else %[inc] monitor
+                _grab_season(title, season, series_dir=ser_dir, year=year,
+                             alt_title=display)   # pack now, else %[inc] monitor
         else:
-            _grab(title, year, kind="series", series_dir=ser_dir)
+            _grab(title, year, kind="series", series_dir=ser_dir, alt_title=display)
     else:
-            _grab(title, year, kind="movie", movies_dir=mov_dir, kids=kids)
+            _grab(title, year, kind="movie", movies_dir=mov_dir, kids=kids, alt_title=display)
 
 
 # /health talks to FulDC++, so cache it: k8s probes every 10s and a readiness
